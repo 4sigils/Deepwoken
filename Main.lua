@@ -1,30 +1,21 @@
 local IGNORE_URL = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/IgnoredAnimations.lua"
 local DATA_URL   = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/Animations.lua"
 
--- Same images as your Nexa showcase (set to nil to remove)
--- Solid-black assets; the UI keeps its layout without a bright external image.
 local LOGO_URL = "https://cdn.discordapp.com/attachments/1402876855840804895/1558405775167201400/noFilter_1.png?ex=6acb51fa&is=6aca007a&hm=8ff9153ff0a850fa34512fbe989660978c0583fa43b6a417caac6a61de7189fd&"
 local BG_URL   = "https://placehold.co/1920x1080/000000/000000.png"
 
--- Virtual key codes
 local KEY_PARRY  = 0x46 -- F
 local KEY_DODGE  = 0x51 -- Q
 local KEY_JUMP   = 0x20 -- Space
 local KEY_CROUCH = 0x43 -- C
 local CROUCH_HOLD = 0.5 -- crouch is held then auto-released
 
--- All animation timings in the data file are tuned for roughly this ping (ms).
 -- Ping Comp = your ping - BASE_PING (negative if you have lower ping).
 local BASE_PING = 60
 
--- Balanced scan cadence: ~55 scans/sec while preserving responsive parry timing.
 local SCAN_INTERVAL = 0.018
-local HIST_SLOTS = 10       -- rows shown in the Tracker "Now Playing" list
+local HIST_SLOTS = 10     
 
---------------------------------------------------------
--- NEXA UI LOADER (destroys an old instance and loads fresh,
--- so re-running the script never stacks tabs / loops)
---------------------------------------------------------
 local NEXA_SOURCE = "https://raw.githubusercontent.com/OgTen/Nexa-UI/refs/heads/main/nexa-ui.lua"
 
 local function isNexaLibrary(value)
@@ -70,9 +61,6 @@ local function getNexa()
         error("[Deepwoken] Nexa download returned invalid/empty source.")
     end
 
-    -- Hide Nexa's floating island/profile avatar whenever the main menu is hidden.
-    -- These are Drawing objects outside the normal pooled menu, so the library
-    -- must explicitly hide them rather than relying on the menu's fade alpha.
     local islandPatch = [[local function DrawTitleBar(title, subtitle)
     local th = State.Theme]]
     local islandReplacement = [[local function DrawTitleBar(title, subtitle)
@@ -923,6 +911,59 @@ Reg("remove_winds", miscGeneralSec:AddToggle({
 }))
 
 --------------------------------------------------------
+-- CONFIG AUTOSAVE / AUTOLOAD
+--------------------------------------------------------
+do
+    local CONFIG_FILE = "Deepwoken_Config.json"
+    local SKIP = { sb_t_ping = true } -- auto-set from your ping on inject
+
+    -- load
+    if type(readfile) == "function" and type(isfile) == "function" then
+        local ok, raw = pcall(function()
+            if isfile(CONFIG_FILE) then return readfile(CONFIG_FILE) end
+        end)
+        if ok and type(raw) == "string" and raw ~= "" then
+            local good, saved = pcall(function() return HttpService:JSONDecode(raw) end)
+            if good and type(saved) == "table" then
+                for flag, ctrl in pairs(Controls) do
+                    if not SKIP[flag] and saved[flag] ~= nil then
+                        pcall(function() ctrl:SetValue(saved[flag]) end)
+                    end
+                end
+            end
+        end
+    end
+
+    -- autosave on change
+    if type(writefile) == "function" then
+        local lastSig
+        task.spawn(function()
+            while Nexa:IsAlive() do
+                task.wait(1)
+                local flags, snap = {}, {}
+                for flag, ctrl in pairs(Controls) do
+                    if not SKIP[flag] then
+                        local ok, v = pcall(function() return ctrl:GetValue() end)
+                        if ok and (type(v) == "boolean" or type(v) == "number" or type(v) == "string") then
+                            flags[#flags + 1] = flag
+                            snap[flag] = v
+                        end
+                    end
+                end
+                table.sort(flags)
+                local parts = {}
+                for _, f in ipairs(flags) do parts[#parts + 1] = f .. "=" .. tostring(snap[f]) end
+                local sig = table.concat(parts, ";")
+                if sig ~= lastSig then
+                    lastSig = sig
+                    pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(snap)) end)
+                end
+            end
+        end)
+    end
+end
+
+--------------------------------------------------------
 -- TRACKER TAB
 --------------------------------------------------------
 local Tracked = {}          -- [model address] = {model=, animator=, name=, seen={}}
@@ -1375,132 +1416,139 @@ end
 --------------------------------------------------------
 
 -- Auto Ritual ------------------------------------------
--- How the game's SpellClient works (from the decompiled script):
---  * Every ritual symbol is a Frame in SpellGui.SpellFrame.Symbols holding a TextLabel. The label
---    text is the key YOU have bound to that spell input, so pressing what the label shows is correct
---    for any keybind setup (not just Z/X/C/V).
---  * Frames are created in sequence order, 80px apart. When the server accepts a key, progress
---    advances: finished frames hide and the remaining ones slide left.
---  * A wrong or mistimed key gives an "error" shake and no progress.
--- So this presses ONE key at a time and waits for the game to confirm progress before the next one,
--- retrying a key that wasn't accepted, instead of firing the whole sequence blind.
+-- Fires the game's own ritual remote (ReplicatedStorage.Requests.Mantras.RitualSpellInput:FireServer(n),
+-- n = 1..4) for every symbol in SpellGui.SpellFrame.Symbols, in order, for rituals of any length.
+-- Falls back to pressing the real key if the remote can't be fired.
+-- Wrapped in do...end so its locals don't count against the script's top-level local limit.
+do
+    local RITUAL_START_DELAY = 0.3
+    local RITUAL_GAP = 0.12
+    local RITUAL_HOLD = 0.05
 
-local RitualNamedKeys = {
-    SPACE = 0x20, TAB = 0x09, RETURN = 0x0D, ENTER = 0x0D,
-    LEFTSHIFT = 0xA0, RIGHTSHIFT = 0xA1, LEFTCONTROL = 0xA2, RIGHTCONTROL = 0xA3,
-    LEFTALT = 0xA4, RIGHTALT = 0xA5,
-}
+    -- Which ritual number each key is bound to (swap the numbers if the game rejects the inputs)
+    local KEY_TO_INDEX = { Z = 1, X = 2, C = 3, V = 4 }
+    local KEYCODES = { Z = 0x5A, X = 0x58, C = 0x43, V = 0x56 }
 
--- Turns a keybind label ("Z", "x", "3", "Space"...) into a virtual key code
-local function RitualKey(text)
-    if type(text) ~= "string" then return nil end
-    local t = string.upper((text:gsub("%s+", "")))
-    if #t == 1 then
-        local b = string.byte(t)
-        if (b >= 65 and b <= 90) or (b >= 48 and b <= 57) then return b end -- A-Z, 0-9
+    local ritualRemote
+    local function getRitualRemote()
+        if ritualRemote then return ritualRemote end
+        local rs = game:GetService("ReplicatedStorage")
+        local requests = rs:FindFirstChild("Requests")
+        local mantras = requests and requests:FindFirstChild("Mantras")
+        ritualRemote = mantras and mantras:FindFirstChild("RitualSpellInput") or nil
+        return ritualRemote
     end
-    return RitualNamedKeys[t]
-end
 
-local function PosX(inst)
-    local ok, x = pcall(function() return inst.AbsolutePosition.X end)
-    if ok and type(x) == "number" then return x end
-    return nil
-end
-
-local function IsVisible(inst)
-    local ok, v = pcall(function() return inst.Visible end)
-    if not ok then return false end -- destroyed
-    return v ~= false
-end
-
-local function SpellOpen(frame)
-    local ok, y = pcall(function() return frame.AbsoluteSize.Y end)
-    return ok and type(y) == "number" and y >= 10
-end
-
--- Waits until the game shows the key was accepted: the pressed frame hides, the next frame
--- slides left of where it was, or the whole spell frame closes. Returns false on timeout.
-local function WaitRitualAccepted(spellFrame, frames, k, nextX0)
-    local t0 = os.clock()
-    while Nexa:IsAlive() and os.clock() - t0 < 1.0 do
-        task.wait(0.02)
-        if not SpellOpen(spellFrame) then return true end
-        if not IsVisible(frames[k]) then return true end
-        local nxt = frames[k + 1]
-        if nxt and nextX0 then
-            local x = PosX(nxt)
-            if x and x < nextX0 - 2 then return true end
-        end
+    local function getSymbols()
+        local lp = Players.LocalPlayer
+        local gui = lp and lp:FindFirstChild("PlayerGui")
+        local spellGui = gui and gui:FindFirstChild("SpellGui")
+        local spellFrame = spellGui and spellGui:FindFirstChild("SpellFrame")
+        return spellFrame and spellFrame:FindFirstChild("Symbols") or nil
     end
-    return false
-end
 
--- One pass of the ritual check. Returns early whenever the spell GUI isn't ready.
-local function RitualStep()
-    local lp = Players.LocalPlayer
-    local gui = lp and lp:FindFirstChild("PlayerGui")
-    local spellGui = gui and gui:FindFirstChild("SpellGui")
-    if not spellGui then return end
-
-    local spellFrame = spellGui:FindFirstChild("SpellFrame")
-    if not spellFrame or not SpellOpen(spellFrame) then return end
-
-    local symbols = spellFrame:FindFirstChild("Symbols")
-    if not symbols then return end
-
-    -- Collect the symbol frames and put them in on-screen (left to right) order
-    local frames = {}
-    for _, frame in ipairs(symbols:GetChildren()) do
-        if frame:FindFirstChild("TextLabel") then frames[#frames + 1] = frame end
+    -- Symbol n sits at x = n*80 and slides left as you progress, so left-to-right is ritual order
+    local function frameX(frame)
+        local ok, x = pcall(function() return frame.Position.X.Offset end)
+        if ok and type(x) == "number" then return x end
+        return nil
     end
-    if #frames == 0 then return end
 
-    local xs, allX = {}, true
-    for _, f in ipairs(frames) do
-        xs[f] = PosX(f)
-        if not xs[f] then allX = false end
-    end
-    if allX then table.sort(frames, function(a, b) return xs[a] < xs[b] end) end
-
-    task.wait(0.25) -- let the open animation settle
-    if not SpellOpen(spellFrame) then return end
-
-    for k, frame in ipairs(frames) do
-        local label = frame:FindFirstChild("TextLabel")
-        local key = label and RitualKey(label.Text)
-        if not key then
-            warn("[Deepwoken] ritual: don't know the key for label '" .. tostring(label and label.Text) .. "'")
-            break
+    -- Returns the key letters in order, an id for this ritual, and how many symbols there are
+    local function readRitual(symbols)
+        local frames = {}
+        for _, frame in ipairs(symbols:GetChildren()) do
+            if frame:FindFirstChild("TextLabel") then frames[#frames + 1] = frame end
         end
 
-        local accepted = false
-        for _ = 1, 3 do
-            if not Nexa:IsAlive() or not SpellOpen(spellFrame) then break end
-            local nextX0 = frames[k + 1] and PosX(frames[k + 1]) or nil
-            pcall(keypress, key)
-            task.wait(0.04)
-            pcall(keyrelease, key)
-            if WaitRitualAccepted(spellFrame, frames, k, nextX0) then accepted = true break end
+        -- id is built from the unsorted list so it stays stable while frames slide and hide
+        local idParts = { tostring(#frames) }
+        for _, f in ipairs(frames) do idParts[#idParts + 1] = tostring(f.Address or "") end
+        local ritualId = table.concat(idParts, ",")
+
+        -- sort by on-screen position only when every position is readable and distinct;
+        -- otherwise keep the Explorer order (top to bottom)
+        local xs, allX, seen = {}, #frames > 1, {}
+        for _, f in ipairs(frames) do
+            local x = frameX(f)
+            xs[f] = x
+            if x == nil or seen[x] then allX = false end
+            if x ~= nil then seen[x] = true end
         end
-        if not accepted then break end
+        if allX then table.sort(frames, function(a, b) return xs[a] < xs[b] end) end
+
+        local seq = {}
+        for _, frame in ipairs(frames) do
+            local label = frame:FindFirstChild("TextLabel")
+            local text = string.upper(tostring(label.Text))
+            if KEY_TO_INDEX[text] then seq[#seq + 1] = text end
+        end
+        return seq, ritualId, #frames
     end
 
-    -- wait for the spell frame to close before checking again
-    while Nexa:IsAlive() and SpellOpen(spellFrame) do
-        task.wait(0.1)
+    local remoteBroken = false
+    local function sendRitualInput(letter)
+        if not remoteBroken then
+            local r = getRitualRemote()
+            if r then
+                local ok = pcall(function() r:FireServer(KEY_TO_INDEX[letter]) end)
+                if ok then return end
+            end
+            remoteBroken = true -- remote missing or can't be fired: use the real key from now on
+        end
+        pcall(keypress, KEYCODES[letter])
+        task.wait(RITUAL_HOLD)
+        pcall(keyrelease, KEYCODES[letter])
     end
+
+    local function RitualStep(lastId)
+        local symbols = getSymbols()
+        if not symbols then return nil end
+
+        local seq, id, count = readRitual(symbols)
+        if count == 0 then return nil end          -- UI cleared; ready for the next ritual
+        if id == lastId or #seq == 0 then return lastId end
+
+        task.wait(RITUAL_START_DELAY)
+        if not Get("auto_ritual") then return id end
+
+        local seq2, id2 = readRitual(symbols)
+        if #seq2 == 0 then return id end
+
+        for i, letter in ipairs(seq2) do
+            if not Nexa:IsAlive() or not Get("auto_ritual") then break end
+
+            -- stop if the ritual closed or a different one started while sending
+            local sym = getSymbols()
+            if not sym then break end
+            if i > 1 then
+                local _, curId = readRitual(sym)
+                if curId ~= id2 then return nil end
+            end
+
+            sendRitualInput(letter)
+            task.wait(RITUAL_GAP)
+        end
+        return id2
+    end
+
+    task.spawn(function()
+        local lastId = nil
+        while Nexa:IsAlive() do
+            task.wait(0.1)
+            if Get("auto_ritual") then
+                local ok, res = pcall(RitualStep, lastId)
+                if ok then
+                    lastId = res
+                else
+                    warn("[Deepwoken] ritual error: " .. tostring(res))
+                end
+            else
+                lastId = nil
+            end
+        end
+    end)
 end
-
-task.spawn(function()
-    while Nexa:IsAlive() do
-        task.wait(0.1)
-        if Get("auto_ritual") then
-            local ok, err = pcall(RitualStep)
-            if not ok then warn("[Deepwoken] ritual error: " .. tostring(err)) end
-        end
-    end
-end)
 
 -- Auto Ragdoll Cancel ----------------------------------
 local function RightClick()
