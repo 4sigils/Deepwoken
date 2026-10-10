@@ -2,20 +2,21 @@ local IGNORE_URL = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/hea
 local DATA_URL   = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/Animations.lua"
 
 local LOGO_URL = "https://cdn.discordapp.com/attachments/1402876855840804895/1558405775167201400/noFilter_1.png?ex=6acb51fa&is=6aca007a&hm=8ff9153ff0a850fa34512fbe989660978c0583fa43b6a417caac6a61de7189fd&"
-local BG_URL   = "https://placehold.co/1920x1080/000000/000000.png"
+-- Embedded 4x4 black PNG (no download, no 1920x1080 texture to decode and draw every frame)
+local BG_IMG   = "\137\080\078\071\013\010\026\010\000\000\000\013\073\072\068\082\000\000\000\004\000\000\000\004\008\006\000\000\000\169\241\158\126\000\000\000\079\073\068\065\084\120\001\001\068\000\187\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\006\090\015\241\170\028\251\110\000\000\000\000\073\069\078\068\174\066\096\130"
 
 local KEY_PARRY  = 0x46 -- F
 local KEY_DODGE  = 0x51 -- Q
 local KEY_JUMP   = 0x20 -- Space
-local KEY_CROUCH = 0x43 -- C
-local CROUCH_HOLD = 0.5 -- crouch is held then auto-released
+local KEY_CROUCH = 0xA2 -- Left Ctrl
 
--- Ping Comp = your ping - BASE_PING (negative if you have lower ping).
+-- All animation timings in the data file are tuned for roughly this ping (ms).
 local BASE_PING = 60
 
 local SCAN_INTERVAL = 0.018
-local HIST_SLOTS = 10     
+local HIST_SLOTS = 10
 
+-- NEXA UI LOADER
 local NEXA_SOURCE = "https://raw.githubusercontent.com/OgTen/Nexa-UI/refs/heads/main/nexa-ui.lua"
 
 local function isNexaLibrary(value)
@@ -101,8 +102,10 @@ end
 local Nexa = getNexa()
 
 local Controls = {}
+local ConfigDirty = false -- set whenever a registered control changes; the autosave loop only writes when this is true
 local function Reg(flag, ctrl)
     Controls[flag] = ctrl
+    ctrl:OnChanged(function() ConfigDirty = true end)
     return ctrl
 end
 local function Get(flag)
@@ -111,9 +114,7 @@ local function Get(flag)
     return nil
 end
 
---------------------------------------------------------
--- MEMORY / OFFSETS (pcall without closures = far less garbage per frame)
---------------------------------------------------------
+-- MEMORY / OFFSETS
 local offsets = game:GetService("HttpService"):JSONDecode(game:HttpGet("https://offsets.imtheo.lol/Offsets.json")).Offsets
 local KnownOffsets = {
     AnimationId      = offsets.Misc.AnimationId,
@@ -148,9 +149,7 @@ local function CleanId(id)
     return id and tostring(id):match("%d+")
 end
 
---------------------------------------------------------
--- ENEMIES (workspace.Live: name in game.Players = player, otherwise NPC)
---------------------------------------------------------
+-- ENEMIES
 local Players = game:GetService("Players")
 
 local function CleanName(name)
@@ -176,9 +175,9 @@ local function GetAnimatorAddr(model)
     return addr
 end
 
--- Reads the "Guild" attribute off a Player instance in game.Players (nil if none)
+local function GuildAttr(m) return m:GetAttribute("Guild") end
 local function GetGuild(model)
-    local ok, g = pcall(function() return model:GetAttribute("Guild") end)
+    local ok, g = pcall(GuildAttr, model)
     if ok and type(g) == "string" and g ~= "" then return g end
     return nil
 end
@@ -195,15 +194,16 @@ local function BuildEntry(model)
     return {
         model = model,
         name = name,
+        lname = string.lower(name),
         key = tostring(model.Address),
         hrp = hrp,
         animator = animator,
         isPlayer = Players:FindFirstChild(name) ~= nil,
         skipUntil = 0,
+        guildAt = 0,
     }
 end
 
--- Entries are cached per model, so a refresh only does real work for new models
 local function RefreshEnemies(now)
     local list, nextCache = {}, {}
     local lp = Players.LocalPlayer
@@ -222,9 +222,12 @@ local function RefreshEnemies(now)
             local entry = (cached and not cached.dead and not cached.stale) and cached or BuildEntry(model)
             if entry then
                 nextCache[addr] = entry
-                -- guild lives on the Player instance (game.Players), re-read since it can load late
-                local plr = entry.isPlayer and Players:FindFirstChild(entry.name) or nil
-                entry.guild = plr and GetGuild(plr) or nil
+                -- guilds rarely change, so only re-read them every few seconds
+                if entry.isPlayer and now >= entry.guildAt then
+                    entry.guildAt = now + 5
+                    local plr = Players:FindFirstChild(entry.name)
+                    entry.guild = plr and GetGuild(plr) or nil
+                end
                 if entry.name ~= myName then list[#list + 1] = entry end
             else
                 nextCache[addr] = {dead = true, retryAt = now + 3}
@@ -249,7 +252,6 @@ local function DistanceToModel(model)
     return (mine.Position - theirs.Position).Magnitude
 end
 
--- Animations currently playing on an enemy: { {id=, elapsed=, track=}, ... }
 local function GetPlayingAnims(enemy)
     local out = {}
     local addr = enemy.animator or GetAnimatorAddr(enemy.model)
@@ -257,7 +259,6 @@ local function GetPlayingAnims(enemy)
 
     local listHead = ReadPointer(addr + KnownOffsets.ActiveAnimations)
     if not listHead then
-        -- animator pointer looks stale, rebuild this entry on the next refresh
         AnimatorCache[enemy.model.Address] = nil
         enemy.stale = true
         return out
@@ -327,10 +328,7 @@ local function HttpGet(url)
     return nil
 end
 
---------------------------------------------------------
 -- PING
---------------------------------------------------------
--- Returns your current ping in ms (or nil if it can't be read yet)
 local function GetPingMs()
     local ok, v = pcall(function()
         return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
@@ -345,28 +343,23 @@ local function GetPingMs()
     return nil
 end
 
--- Maps a ping to the Ping Comp slider value (timings are tuned for BASE_PING)
 local function PingToComp(ping)
     local comp = math.floor(ping - BASE_PING + 0.5)
     return math.max(-BASE_PING, math.min(300, comp))
 end
 
---------------------------------------------------------
 -- STATE
---------------------------------------------------------
-local AnimDB      = {}   -- [id] = {name=, actions={ {kind=, t=}, ... }}
+local AnimDB      = {}
 local Active      = {}
 local Queue       = {}
 local Status      = {loaded = 0, ignored = 0, tracked = 0, last = "none", lastDist = 0, loopMs = 0, scanMs = 0, ping = 0}
 
 local function Log(msg) print("[Deepwoken] " .. tostring(msg)) end
 
---------------------------------------------------------
 -- ANIMATION DATA
--- Supports: number | {t1,t2} | {type=,t=} | {type=,t={..}} | {{type=,t=},...}
---------------------------------------------------------
+-- Entry formats: number | { t1, t2 } | { type = "parry", t = {..}, unparryable = true } | { { type = "jump", t = 0.4 }, ... }
+-- types: parry, dodge (dodge-only, always Q), unparryable (Q, or F with "Parry Unparryables"), jump, crouch
 
--- Tiny parser for the data file, used when loadstring doesn't hand back the table
 local function ParseLua(src)
     local pos, len = 1, #src
     local parseValue
@@ -402,14 +395,14 @@ local function ParseLua(src)
             if c == "[" then
                 pos = pos + 1
                 local k = parseValue()
-                skip(); pos = pos + 1 -- ]
-                skip(); pos = pos + 1 -- =
+                skip(); pos = pos + 1
+                skip(); pos = pos + 1
                 t[k] = parseValue()
             else
                 local name = src:match("^([%a_][%w_]*)%s*=", pos)
                 if name then
                     pos = pos + #name
-                    skip(); pos = pos + 1 -- =
+                    skip(); pos = pos + 1
                     t[name] = parseValue()
                 else
                     n = n + 1
@@ -454,11 +447,13 @@ end
 
 local function Normalize(v)
     local actions = {}
-    local function add(kind, t)
+    local function add(kind, t, unparryable)
         if type(t) == "table" then
-            for _, x in ipairs(t) do add(kind, x) end
+            for _, x in ipairs(t) do add(kind, x, unparryable) end
         elseif type(t) == "number" then
-            actions[#actions + 1] = {kind = string.lower(tostring(kind)), t = t}
+            local k = string.lower(tostring(kind))
+            if unparryable and k ~= "dodge" then k = "unparryable" end
+            actions[#actions + 1] = {kind = k, t = t}
         end
     end
 
@@ -466,13 +461,13 @@ local function Normalize(v)
         add("parry", v)
     elseif type(v) == "table" then
         if v.type or v.t then
-            add(v.type or "parry", v.t)
+            add(v.type or "parry", v.t, v.unparryable)
         else
             for _, item in ipairs(v) do
                 if type(item) == "number" then
                     add("parry", item)
                 elseif type(item) == "table" then
-                    add(item.type or "parry", item.t)
+                    add(item.type or "parry", item.t, item.unparryable)
                 end
             end
         end
@@ -520,9 +515,7 @@ local function LoadData()
     Log("Loaded " .. n .. " animations")
 end
 
---------------------------------------------------------
 -- IGNORED ANIMS
---------------------------------------------------------
 local IgnoredIds = {}
 
 local function LoadIgnored()
@@ -545,9 +538,7 @@ local function LoadIgnored()
     Log("Ignoring " .. n .. " animations")
 end
 
---------------------------------------------------------
--- WINDOW (same setup as the Nexa showcase)
---------------------------------------------------------
+-- WINDOW
 Nexa:CreateWindow({
     Title = "Deepwoken",
     Subtitle = "Tungity Tungity Sahurity",
@@ -559,25 +550,38 @@ Nexa:CreateWindow({
     Opacity = 100,
     MenuKey = "p",
     Logo = LOGO_URL,
-    BackgroundImage = BG_URL,
+    BackgroundImage = BG_IMG,
     Splash = { Image = LOGO_URL },
     ShowLogo = LOGO_URL ~= nil,
     ShowGameName = true,
     IslandExpanded = true,
 })
 
--- Tab order: Auto Parry - Automation - Visuals - Misc - Tracker - Whitelists - Debug
+-- UI performance defaults (turn back on via the island icons / Settings tab if you want them)
+do
+    local S = Nexa.State
+    S.Settings.KeybindOverlay = false
+    S.Settings.PerformanceOverlay = false
+
+    local settingsTab = Nexa:GetTab("Settings")
+    if settingsTab then
+        for _, row in ipairs(settingsTab.Rows or {}) do
+            for _, ctrl in ipairs(row.Rows or {}) do
+                if ctrl.Title == "Border animation" and ctrl.SetValue then ctrl:SetValue(false) end
+            end
+        end
+    end
+end
+
 local mainTab       = Nexa:AddTab({ Title = "Auto Parry", Icon = "shield", Select = true })
 local automationTab = Nexa:AddTab({ Title = "Automation", Icon = "zap" })
-local visualsTab    = Nexa:AddTab({ Title = "Visuals", Icon = "eye" })   -- empty for now
-local miscTab       = Nexa:AddTab({ Title = "Misc", Icon = "layers" })   -- empty for now
+local visualsTab    = Nexa:AddTab({ Title = "Visuals", Icon = "eye" })
+local miscTab       = Nexa:AddTab({ Title = "Misc", Icon = "layers" })
 local trackerTab    = Nexa:AddTab({ Title = "Tracker", Icon = "crosshair" })
 local whitelistTab  = Nexa:AddTab({ Title = "Whitelists", Icon = "users" })
 local debugTab      = Nexa:AddTab({ Title = "Debug", Icon = "search" })
 
---------------------------------------------------------
--- FRIEND EXCLUSIONS (saved separately when executor file APIs exist)
---------------------------------------------------------
+-- FRIEND EXCLUSIONS
 local HttpService = game:GetService("HttpService")
 local FRIENDS_FILE = "Deepwoken_ExcludedFriends.json"
 local IgnoredFriends = {}
@@ -611,18 +615,14 @@ end
 
 LoadIgnoredFriends()
 
--- Case-insensitive lookup so manually typed names still match
+-- lower-cased lookup; enemies carry a pre-lowered name (lname) so the scan never allocates strings
 local FriendsLower = {}
 local function RebuildFriendsLower()
     FriendsLower = {}
     for name in pairs(IgnoredFriends) do FriendsLower[string.lower(name)] = true end
 end
-local function IsFriend(name)
-    return name ~= nil and FriendsLower[string.lower(name)] == true
-end
 RebuildFriendsLower()
 
--- Guild whitelist (saved to its own file)
 local GUILDS_FILE = "Deepwoken_ExcludedGuilds.json"
 local IgnoredGuilds = {}
 
@@ -651,9 +651,7 @@ end
 
 LoadIgnoredGuilds()
 
---------------------------------------------------------
 -- WHITELISTS TAB: FRIENDS
---------------------------------------------------------
 local friendsSec = whitelistTab:AddSection("Friends", "Selected players will never be tracked by auto-parry.", { Column = "left" })
 local friendsDropdown
 local function GetPlayerNames()
@@ -663,7 +661,6 @@ local function GetPlayerNames()
             found[player.Name] = true
         end
     end
-    -- Keep saved exclusions visible even when those players are offline.
     for name in pairs(IgnoredFriends) do found[name] = true end
     for name in pairs(found) do names[#names + 1] = name end
     table.sort(names, function(a, b) return string.lower(a) < string.lower(b) end)
@@ -724,14 +721,11 @@ friendsSec:AddButton({
     Callback = SaveIgnoredFriends,
 })
 
---------------------------------------------------------
 -- WHITELISTS TAB: GUILDS
---------------------------------------------------------
 local guildSec = whitelistTab:AddSection("Guild", "Members of selected guilds will never be tracked by auto-parry.", { Column = "right" })
 local guildDropdown
 local yourGuildStatus = guildSec:AddStatus({ Title = "Your guild", Default = "-", Tone = "muted" })
 
--- Every guild currently found on game.Players (includes your own) + saved ones
 local function GetGuildNames()
     local found, names = {}, {}
     for _, player in ipairs(Players:GetPlayers()) do
@@ -748,7 +742,6 @@ local function RefreshGuildDropdown()
     local options = GetGuildNames()
     if #options == 0 then options = {"No guilds found"} end
 
-    -- show your own guild
     local lp = Players.LocalPlayer
     local myGuild = lp and GetGuild(lp)
     pcall(function() yourGuildStatus:SetValue(myGuild or "-", myGuild and "accent" or "muted") end)
@@ -798,9 +791,7 @@ guildSec:AddButton({
 })
 RefreshGuildDropdown()
 
---------------------------------------------------------
 -- AUTO PARRY TAB
---------------------------------------------------------
 local parrySec = mainTab:AddSection("Auto Parry", "Targets and feint handling.", { Column = "left" })
 
 local enabledToggle = Reg("sb_parry_on", parrySec:AddToggle({
@@ -827,7 +818,7 @@ Reg("sb_parry_npcs", parrySec:AddToggle({
 }))
 Reg("sb_parry_unparryables", parrySec:AddToggle({
     Title = "Parry Unparryables",
-    Tooltip = "Dodge actions press F (parry) instead of Q",
+    Tooltip = "Unparryable actions press F (parry) instead of Q (for armor that allows it). Dodge-only actions always press Q.",
     Default = false,
     ConfigKey = "deepwoken.parry.unparryables",
 }))
@@ -842,13 +833,23 @@ Reg("sb_range", parrySec:AddSlider({
     Min = 5, Max = 100, Step = 1, Default = 20, Suffix = " studs",
     ConfigKey = "deepwoken.parry.range",
 }))
--- Timings are tuned for ~60 ping. This is auto-set from your ping on inject
--- (and by the Debug > Get Ping button). Negative = fire later (low ping).
 Reg("sb_t_ping", parrySec:AddSlider({
     Title = "Ping Comp",
     Tooltip = "Fires actions this much earlier. Timings are tuned for ~60 ping; auto-set from your ping on inject.",
     Min = -BASE_PING, Max = 300, Step = 1, Default = 0, Suffix = "ms",
     ConfigKey = "deepwoken.timing.ping",
+}))
+Reg("sb_t_uncrouch", parrySec:AddSlider({
+    Title = "Uncrouch Timing",
+    Tooltip = "Crouch is a toggle: how long after crouching it presses the key again to stand up",
+    Min = 0, Max = 2000, Step = 10, Default = 500, Suffix = "ms",
+    ConfigKey = "deepwoken.timing.uncrouch",
+}))
+Reg("sb_t_rollcancel", parrySec:AddSlider({
+    Title = "Roll Cancel Timing",
+    Tooltip = "How long after a dodge (Q) it waits before right-clicking to roll cancel. 0 = off",
+    Min = 0, Max = 1000, Step = 5, Default = 0, Suffix = "ms",
+    ConfigKey = "deepwoken.timing.rollCancel",
 }))
 
 local feintSec = mainTab:AddSection("Feints", "Handling for canceled swings.", { Column = "right" })
@@ -865,9 +866,7 @@ Reg("sb_parry_feint_grace", feintSec:AddSlider({
     ConfigKey = "deepwoken.parry.feintGrace",
 }))
 
---------------------------------------------------------
 -- AUTOMATION TAB
---------------------------------------------------------
 local generalSec = automationTab:AddSection("General", "Quality-of-life automation.", { Column = "left" })
 Reg("auto_ritual", generalSec:AddToggle({
     Title = "Auto Ritual",
@@ -882,26 +881,9 @@ Reg("auto_ragdoll_cancel", generalSec:AddToggle({
     ConfigKey = "deepwoken.automation.ragdollCancel",
 }))
 
---------------------------------------------------------
 -- VISUALS TAB
---------------------------------------------------------
-local worldSec = visualsTab:AddSection("World", "Environment tweaks.", { Column = "left" })
-Reg("no_fog", worldSec:AddToggle({
-    Title = "No Fog",
-    Tooltip = "Sets Density to 0 on every Atmosphere. Restores the original values when turned off.",
-    Default = false,
-    ConfigKey = "deepwoken.visuals.noFog",
-}))
-Reg("no_legacy_fog", worldSec:AddToggle({
-    Title = "No Lighting Fog",
-    Tooltip = "Pushes Lighting.FogEnd far away (older-style fog some areas use).",
-    Default = false,
-    ConfigKey = "deepwoken.visuals.noLegacyFog",
-}))
 
---------------------------------------------------------
 -- MISC TAB
---------------------------------------------------------
 local miscGeneralSec = miscTab:AddSection("General", "Miscellaneous tweaks.", { Column = "left" })
 Reg("remove_winds", miscGeneralSec:AddToggle({
     Title = "Remove Winds",
@@ -909,15 +891,29 @@ Reg("remove_winds", miscGeneralSec:AddToggle({
     Default = false,
     ConfigKey = "deepwoken.misc.removeWinds",
 }))
+Reg("no_fog", miscGeneralSec:AddToggle({
+    Title = "No Fog",
+    Tooltip = "Sets Density to 0 on every Atmosphere. Restores the original values when turned off.",
+    Default = false,
+    ConfigKey = "deepwoken.visuals.noFog",
+}))
+Reg("no_legacy_fog", miscGeneralSec:AddToggle({
+    Title = "No Lighting Fog",
+    Tooltip = "Pushes Lighting.FogEnd far away (older-style fog some areas use).",
+    Default = false,
+    ConfigKey = "deepwoken.visuals.noLegacyFog",
+}))
+Reg("fps_boost", miscGeneralSec:AddToggle({
+    Title = "FPS Boost",
+    Tooltip = "Removes the sea and water parts for more FPS. One-way: it can't be undone until you rejoin. Not saved to the auto config.",
+    Default = false,
+}))
 
---------------------------------------------------------
 -- CONFIG AUTOSAVE / AUTOLOAD
---------------------------------------------------------
 do
     local CONFIG_FILE = "Deepwoken_Config.json"
-    local SKIP = { sb_t_ping = true } -- auto-set from your ping on inject
+    local SKIP = { sb_t_ping = true, print_parries = true, fps_boost = true }
 
-    -- load
     if type(readfile) == "function" and type(isfile) == "function" then
         local ok, raw = pcall(function()
             if isfile(CONFIG_FILE) then return readfile(CONFIG_FILE) end
@@ -934,28 +930,23 @@ do
         end
     end
 
-    -- autosave on change
     if type(writefile) == "function" then
-        local lastSig
+        -- event driven: nothing is polled or compared, we only write when a control actually changed
         task.spawn(function()
+            ConfigDirty = false
             while Nexa:IsAlive() do
                 task.wait(1)
-                local flags, snap = {}, {}
-                for flag, ctrl in pairs(Controls) do
-                    if not SKIP[flag] then
-                        local ok, v = pcall(function() return ctrl:GetValue() end)
-                        if ok and (type(v) == "boolean" or type(v) == "number" or type(v) == "string") then
-                            flags[#flags + 1] = flag
-                            snap[flag] = v
+                if ConfigDirty then
+                    ConfigDirty = false
+                    local snap = {}
+                    for flag, ctrl in pairs(Controls) do
+                        if not SKIP[flag] then
+                            local v = ctrl.Value
+                            if type(v) == "boolean" or type(v) == "number" or type(v) == "string" then
+                                snap[flag] = v
+                            end
                         end
                     end
-                end
-                table.sort(flags)
-                local parts = {}
-                for _, f in ipairs(flags) do parts[#parts + 1] = f .. "=" .. tostring(snap[f]) end
-                local sig = table.concat(parts, ";")
-                if sig ~= lastSig then
-                    lastSig = sig
                     pcall(function() writefile(CONFIG_FILE, HttpService:JSONEncode(snap)) end)
                 end
             end
@@ -963,14 +954,13 @@ do
     end
 end
 
---------------------------------------------------------
 -- TRACKER TAB
---------------------------------------------------------
-local Tracked = {}          -- [model address] = {model=, animator=, name=, seen={}}
+local Tracked = {}
 local TrackedCount = 0
 local Hist, HistDirty = {}, true
 local HIST_MAX = 50
 local NpcMap = {}
+local FallbackMap = {}
 
 local function GetTargetFromPath(path)
     local function walk(p)
@@ -993,7 +983,21 @@ local function FindLiveByName(name)
     return nil
 end
 
--- Now Playing list ---------------------------------------
+local function FindOwnModel()
+    local lp = Players.LocalPlayer
+    if not lp then return nil end
+    local ch = lp.Character
+    if ch then return ch end
+    local ok, list = pcall(function() return workspace:GetDescendants() end)
+    if ok and type(list) == "table" then
+        for _, v in ipairs(list) do
+            if v.Name == lp.Name and v:FindFirstChild("Humanoid") then return v end
+        end
+    end
+    return nil
+end
+
+-- Now Playing list
 local playingSec = trackerTab:AddSection("Now Playing", "Animations seen on tracked targets (ignored ones hidden).", { Column = "left" })
 local emptyLabel = playingSec:AddLabel({ Title = "Nothing yet", Description = "Pick a target and press Start Tracking." })
 local histLabels = {}
@@ -1034,7 +1038,7 @@ local function AddHistory(id, targetName)
     HistDirty = true
 end
 
--- Target selection ---------------------------------------
+-- Target selection
 local trackSec = trackerTab:AddSection("Track Target", "Who to watch.", { Column = "right" })
 
 local function SetOptions(dd, names)
@@ -1048,7 +1052,7 @@ local function SetOptions(dd, names)
     dd:SetValue(pick, true)
 end
 
-local targetType, playerDD, npcDD, pathBox
+local targetType, playerDD, npcDD, pathBox, fallbackDD, folderStatus
 
 local function RefreshLists()
     local names = {}
@@ -1076,17 +1080,38 @@ local function RefreshLists()
     end
     table.sort(npcNames, function(a, b) return string.lower(a) < string.lower(b) end)
     SetOptions(npcDD, npcNames)
+
+    FallbackMap = {}
+    local fbNames = {}
+    local own = FindOwnModel()
+    local folder = own and own.Parent
+    if folder then
+        for _, model in ipairs(folder:GetChildren()) do
+            if model:FindFirstChild("Humanoid") then
+                local n = CleanName(model.Name)
+                local disp, c = n, 1
+                while FallbackMap[disp] do c = c + 1 disp = n .. " (" .. c .. ")" end
+                FallbackMap[disp] = model
+                fbNames[#fbNames + 1] = disp
+            end
+        end
+    end
+    table.sort(fbNames, function(a, b) return string.lower(a) < string.lower(b) end)
+    SetOptions(fallbackDD, fbNames)
+    pcall(function() folderStatus:SetValue(folder and tostring(folder.Name) or "-", folder and "accent" or "muted") end)
 end
 
 local function UpdateTargetVisibility(kind)
     playerDD:SetVisible(kind == "Player")
     npcDD:SetVisible(kind == "NPC")
+    fallbackDD:SetVisible(kind == "Fallback")
+    pcall(function() folderStatus:SetVisible(kind == "Fallback") end)
     if pathBox then pathBox:SetVisible(kind == "NPC") end
 end
 
 targetType = trackSec:AddDropdown({
     Title = "Target Type",
-    Options = { "LocalPlayer", "Player", "NPC" },
+    Options = { "LocalPlayer", "Player", "NPC", "Fallback" },
     Default = "LocalPlayer",
     ConfigKey = "deepwoken.tracker.type",
     Callback = function(v)
@@ -1096,7 +1121,8 @@ targetType = trackSec:AddDropdown({
 })
 playerDD = trackSec:AddDropdown({ Title = "Player List", Options = { "None" }, Default = "None", VisibleRows = 8 })
 npcDD    = trackSec:AddDropdown({ Title = "NPC List", Options = { "None" }, Default = "None", VisibleRows = 8 })
--- Only present if the Nexa build exposes a textbox control for sections
+fallbackDD = trackSec:AddDropdown({ Title = "Fallback List", Options = { "None" }, Default = "None", VisibleRows = 8 })
+folderStatus = trackSec:AddStatus({ Title = "Folder", Default = "-", Tone = "muted" })
 pathBox  = trackSec.AddTextbox and trackSec:AddTextbox({
     Title = "NPC Path",
     Placeholder = "Live/NpcName (optional)",
@@ -1123,6 +1149,9 @@ local function ResolveTarget()
         local n = playerDD:GetValue()
         if IgnoredFriends[n] then return nil, n .. " (excluded)" end
         return FindLiveByName(n), n
+    elseif kind == "Fallback" then
+        local disp = fallbackDD:GetValue()
+        return FallbackMap[disp], disp
     end
 
     local path = pathBox and tostring(pathBox:GetValue() or "") or ""
@@ -1172,8 +1201,6 @@ ctrlSec:AddButton({
 
 RefreshLists()
 
--- Tracker work is intentionally throttled; animation history does not need
--- to be sampled every render frame. 50 ms keeps it responsive while lowering CPU.
 local TRACKER_INTERVAL = 0.05
 local nextTrackerAt = 0
 local function GetParent(m) return m.Parent end
@@ -1200,6 +1227,8 @@ local function TrackerStep()
                     tgt.seen[anim.track] = true
                     if not IgnoredIds[anim.id] then
                         AddHistory(anim.id, tgt.name)
+                        Log(string.format("Track: %s | rbxassetid://%s | %.2fs in | %s",
+                            tgt.name, anim.id, anim.elapsed or 0, AnimDB[anim.id] and "in data" or "new"))
                     end
                 end
             end
@@ -1210,9 +1239,7 @@ local function TrackerStep()
     end
 end
 
---------------------------------------------------------
 -- DEBUG TAB
---------------------------------------------------------
 local actionSec = debugTab:AddSection("Actions", "Reload data from GitHub.", { Column = "left" })
 actionSec:AddButton({ Title = "Reload Anim Data", ButtonText = "Reload", Callback = function() LoadData() end })
 actionSec:AddButton({ Title = "Reload Ignored Anims", ButtonText = "Reload", Callback = function() LoadIgnored() end })
@@ -1227,8 +1254,6 @@ local stLoop    = statSec:AddStatus({ Title = "Loop / Scan",   Default = "0 / 0 
 local stPing    = statSec:AddStatus({ Title = "Ping / Comp",   Default = "-", Tone = "muted" })
 local stAtmos   = statSec:AddStatus({ Title = "Atmospheres",   Default = "0", Tone = "muted" })
 
--- Reads ping, updates the Ping Comp slider, and reports back.
--- samples > 1 averages several readings (used on inject, when stats may still be warming up).
 local function ApplyPing(samples, silent)
     samples = samples or 1
     local sum, n = 0, 0
@@ -1269,10 +1294,22 @@ actionSec:AddButton({
     Callback = function() task.spawn(ApplyPing, 3, false) end,
 })
 
+Reg("print_parries", actionSec:AddToggle({
+    Title = "Print Parries",
+    Tooltip = "Prints every action the auto-parry fires (kind, key, enemy, animation id)",
+    Default = false,
+}))
+
 local lastStatusUpdate = 0
 local function UpdateStatusUI(now)
     if now - lastStatusUpdate < 0.25 then return end
     lastStatusUpdate = now
+
+    if HistDirty then RefreshHistLabels() end
+
+    -- the status badges are only on screen in the Debug tab, so don't touch them otherwise
+    if Nexa.State.Tabs[Nexa.State.ActiveIndex] ~= debugTab then return end
+
     stLoaded:SetValue(tostring(Status.loaded))
     stIgnored:SetValue(tostring(Status.ignored))
     stTrack:SetValue(tostring(Status.tracked))
@@ -1283,12 +1320,9 @@ local function UpdateStatusUI(now)
         stPing:SetValue(string.format("%.0f / %d ms", Status.ping, Status.comp or 0))
     end
     stAtmos:SetValue(tostring(Status.atmos or 0))
-    if HistDirty then RefreshHistLabels() end
 end
 
---------------------------------------------------------
 -- LOGIC
---------------------------------------------------------
 local cOn      = Controls.sb_parry_on
 local cPlayers = Controls.sb_parry_players
 local cNpcs    = Controls.sb_parry_npcs
@@ -1296,28 +1330,96 @@ local cRange   = Controls.sb_range
 local cChance  = Controls.sb_parry_chance
 local cUnparry = Controls.sb_parry_unparryables
 
+local function RightClick()
+    if type(mouse2click) == "function" then
+        pcall(mouse2click)
+    elseif type(mouse2press) == "function" and type(mouse2release) == "function" then
+        pcall(mouse2press)
+        task.wait(0.03)
+        pcall(mouse2release)
+    end
+end
+
 local function ActionKey(kind, hold)
     if kind == "jump" then
         return KEY_JUMP, hold
     elseif kind == "crouch" then
-        return KEY_CROUCH, CROUCH_HOLD
+        return KEY_CROUCH, hold
     elseif kind == "dodge" then
+        return KEY_DODGE, hold
+    elseif kind == "unparryable" then
         if cUnparry.Value then return KEY_PARRY, hold end
         return KEY_DODGE, hold
     end
     return KEY_PARRY, hold
 end
 
+local function Perform(kind, hold, tag, model, id)
+    local vk, h = ActionKey(kind, hold)
+    PressKey(vk, h)
+
+    -- crouch is a toggle: press it again to stand back up
+    if kind == "crouch" then
+        local uncrouch = (Get("sb_t_uncrouch") or 500) / 1000
+        task.spawn(function()
+            task.wait(uncrouch)
+            if Nexa:IsAlive() then
+                PressKey(KEY_CROUCH, 0.05)
+            else
+                pcall(keypress, KEY_CROUCH)
+                task.wait(0.05)
+                pcall(keyrelease, KEY_CROUCH)
+            end
+        end)
+    end
+
+    -- roll cancel: right click a set time after a dodge (Q) goes out
+    local rollCancel = Get("sb_t_rollcancel") or 0
+    if vk == KEY_DODGE and rollCancel > 0 then
+        task.spawn(function()
+            task.wait(rollCancel / 1000)
+            if Nexa:IsAlive() then RightClick() end
+        end)
+    end
+
+    if Get("print_parries") then
+        local okN, nm = pcall(function() return model.Name end)
+        Log(string.format("%s%s -> %s | %s | rbxassetid://%s",
+            kind, tag,
+            vk == KEY_PARRY and "F" or vk == KEY_DODGE and "Q" or vk == KEY_JUMP and "Space" or "Ctrl",
+            okN and CleanName(nm) or "?", tostring(id)))
+    end
+end
+
+do
+    -- Test buttons wait 3 seconds first, so you can click back into the game
+    local function TestAction(title, kind)
+        actionSec:AddButton({
+            Title = title,
+            ButtonText = "Run in 3s",
+            Callback = function()
+                Nexa:Notify({ Title = "Test", Content = title .. " fires in 3 seconds", Type = "info", Duration = 3 })
+                task.wait(3)
+                if not Nexa:IsAlive() then return end
+                Perform(kind, 0.05, " (test)", { Name = "Test" }, "test")
+                Nexa:Notify({ Title = "Test", Content = title .. " fired", Type = "success", Duration = 2 })
+            end,
+        })
+    end
+    TestAction("Test Crouch", "crouch")
+    TestAction("Test Dodge", "dodge")
+    TestAction("Test Unparryable", "unparryable")
+end
+
 local function Schedule(startTime, info, akey, model, id)
-    local delay = 0                                   -- fixed; no slider anymore
+    local delay = 0
     local ping  = Get("sb_t_ping") or 0
-    local hold  = 0.05                                -- fixed 50 ms key hold
+    local hold  = 0.05
     local grace = (Get("sb_parry_feint_grace") or 0) / 1000
     local now   = os.clock()
 
     for _, action in ipairs(info.actions) do
         local base = startTime + action.t
-        -- skip actions whose moment already passed (animation seen mid-way)
         if base >= now - 0.1 then
             local at = base + ((delay - ping) / 1000)
             Queue[#Queue + 1] = {
@@ -1340,16 +1442,19 @@ local function FireDue()
         local q = Queue[i]
         if t >= q.at then
             local feinted = not IsAnimAlive(q.model, q.id)
+            local fire, tag = false, ""
 
             if feinted then
                 if math.random(1, 100) <= (Get("sb_parry_feint_chance") or 0) then
-                    local vk, hold = ActionKey(q.kind, q.hold)
-                    PressKey(vk, hold)
+                    fire, tag = true, " (feint)"
                 end
-                table.remove(Queue, i)
             elseif t >= q.graceUntil then
-                local vk, hold = ActionKey(q.kind, q.hold)
-                PressKey(vk, hold)
+                fire = true
+            end
+
+            if fire then Perform(q.kind, q.hold, tag, q.model, q.id) end
+
+            if feinted or t >= q.graceUntil then
                 table.remove(Queue, i)
             end
         end
@@ -1371,13 +1476,13 @@ local function ScanStep(now)
 
     for _, enemy in ipairs(Enemies) do
         if ((enemy.isPlayer and doPlayers) or (not enemy.isPlayer and doNpcs))
-           and not (enemy.isPlayer and IsFriend(enemy.name))
+           and not (enemy.isPlayer and FriendsLower[enemy.lname])
            and not (enemy.guild and IgnoredGuilds[enemy.guild])
            and now >= enemy.skipUntil then
 
             local dist = Dist(enemy)
             if dist > nearRange then
-                enemy.skipUntil = now + 0.3 -- far away, check again later
+                enemy.skipUntil = now + 0.3
             else
                 for _, anim in ipairs(GetPlayingAnims(enemy)) do
                     local id   = anim.id
@@ -1411,14 +1516,9 @@ local function ScanStep(now)
     Status.scanMs = Status.scanMs * 0.8 + (os.clock() - scanStart) * 1000 * 0.2
 end
 
---------------------------------------------------------
 -- AUTOMATION LOGIC
---------------------------------------------------------
 
--- Auto Ritual ------------------------------------------
--- Fires the game's own ritual remote (ReplicatedStorage.Requests.Mantras.RitualSpellInput:FireServer(n),
--- n = 1..4) for every symbol in SpellGui.SpellFrame.Symbols, in order, for rituals of any length.
--- Falls back to pressing the real key if the remote can't be fired.
+-- Auto Ritual
 -- Wrapped in do...end so its locals don't count against the script's top-level local limit.
 do
     local RITUAL_START_DELAY = 0.3
@@ -1447,27 +1547,22 @@ do
         return spellFrame and spellFrame:FindFirstChild("Symbols") or nil
     end
 
-    -- Symbol n sits at x = n*80 and slides left as you progress, so left-to-right is ritual order
     local function frameX(frame)
         local ok, x = pcall(function() return frame.Position.X.Offset end)
         if ok and type(x) == "number" then return x end
         return nil
     end
 
-    -- Returns the key letters in order, an id for this ritual, and how many symbols there are
     local function readRitual(symbols)
         local frames = {}
         for _, frame in ipairs(symbols:GetChildren()) do
             if frame:FindFirstChild("TextLabel") then frames[#frames + 1] = frame end
         end
 
-        -- id is built from the unsorted list so it stays stable while frames slide and hide
         local idParts = { tostring(#frames) }
         for _, f in ipairs(frames) do idParts[#idParts + 1] = tostring(f.Address or "") end
         local ritualId = table.concat(idParts, ",")
 
-        -- sort by on-screen position only when every position is readable and distinct;
-        -- otherwise keep the Explorer order (top to bottom)
         local xs, allX, seen = {}, #frames > 1, {}
         for _, f in ipairs(frames) do
             local x = frameX(f)
@@ -1494,7 +1589,7 @@ do
                 local ok = pcall(function() r:FireServer(KEY_TO_INDEX[letter]) end)
                 if ok then return end
             end
-            remoteBroken = true -- remote missing or can't be fired: use the real key from now on
+            remoteBroken = true
         end
         pcall(keypress, KEYCODES[letter])
         task.wait(RITUAL_HOLD)
@@ -1506,7 +1601,7 @@ do
         if not symbols then return nil end
 
         local seq, id, count = readRitual(symbols)
-        if count == 0 then return nil end          -- UI cleared; ready for the next ritual
+        if count == 0 then return nil end
         if id == lastId or #seq == 0 then return lastId end
 
         task.wait(RITUAL_START_DELAY)
@@ -1518,7 +1613,6 @@ do
         for i, letter in ipairs(seq2) do
             if not Nexa:IsAlive() or not Get("auto_ritual") then break end
 
-            -- stop if the ritual closed or a different one started while sending
             local sym = getSymbols()
             if not sym then break end
             if i > 1 then
@@ -1532,11 +1626,12 @@ do
         return id2
     end
 
+    local cRitual = Controls.auto_ritual
     task.spawn(function()
         local lastId = nil
         while Nexa:IsAlive() do
-            task.wait(0.1)
-            if Get("auto_ritual") then
+            if cRitual.Value then
+                task.wait(0.1)
                 local ok, res = pcall(RitualStep, lastId)
                 if ok then
                     lastId = res
@@ -1545,22 +1640,13 @@ do
                 end
             else
                 lastId = nil
+                task.wait(0.25) -- idle: no need to poll fast
             end
         end
     end)
 end
 
--- Auto Ragdoll Cancel ----------------------------------
-local function RightClick()
-    if type(mouse2click) == "function" then
-        pcall(mouse2click)
-    elseif type(mouse2press) == "function" and type(mouse2release) == "function" then
-        pcall(mouse2press)
-        task.wait(0.03)
-        pcall(mouse2release)
-    end
-end
-
+-- Auto Ragdoll Cancel
 local function IsRagdolled()
     local lp = Players.LocalPlayer
     if not lp then return false end
@@ -1578,9 +1664,10 @@ end
 
 task.spawn(function()
     local lastClick = 0
+    local cRag = Controls.auto_ragdoll_cancel
     while Nexa:IsAlive() do
-        task.wait(0.05)
-        if Get("auto_ragdoll_cancel") then
+        if cRag.Value then
+            task.wait(0.05)
             local ok, ragdolled = pcall(IsRagdolled)
             if ok and ragdolled then
                 local now = os.clock()
@@ -1589,15 +1676,15 @@ task.spawn(function()
                     RightClick()
                 end
             else
-                lastClick = 0 -- ragdoll cleared; next one clicks immediately
+                lastClick = 0
             end
+        else
+            task.wait(0.25) -- idle
         end
     end
 end)
 
---------------------------------------------------------
 -- STARTUP
---------------------------------------------------------
 LoadData()
 LoadIgnored()
 RefreshHistLabels()
@@ -1609,13 +1696,9 @@ Nexa:Notify({
     Duration = 5,
 })
 
---------------------------------------------------------
 -- VISUALS LOGIC: NO FOG
---------------------------------------------------------
--- Density is a float inside the Atmosphere instance. The offset comes from the
--- offsets JSON when it has one; otherwise the hardcoded 0xE8.
 local ATMOS_DENSITY_OFF = 0xE8
-local ATMOS_PROPS = {}     -- { {name=, off=}, ... }
+local ATMOS_PROPS = {}
 pcall(function()
     local a = offsets.Atmosphere
     if type(a) == "table" and type(a.Density) == "number" then ATMOS_DENSITY_OFF = a.Density end
@@ -1623,12 +1706,10 @@ pcall(function()
 end)
 if #ATMOS_PROPS == 0 then ATMOS_PROPS[1] = { name = "Density", off = ATMOS_DENSITY_OFF } end
 
--- Which toggle controls which property
 local function PropOn(name)
-    return Get("no_fog") and true or false -- Density is the only Atmosphere property touched
+    return Get("no_fog") and true or false
 end
 
--- Older-style fog on Lighting itself (FogEnd/FogStart). Only used if the offsets JSON has FogEnd.
 local FOG_END_OFF
 pcall(function()
     local l = offsets.Lighting
@@ -1636,13 +1717,10 @@ pcall(function()
 end)
 local FogEndOriginal
 
-local AtmosOriginal = {}   -- [instance] = { [propName] = original value }
-local AtmosFast, AtmosDeep = {}, {}   -- lists of Atmosphere instances
+local AtmosOriginal = {}
+local AtmosFast, AtmosDeep = {}, {}
 local nextFastScan, nextDeepScan = 0, 0
 
--- Collects Atmosphere instances under root. Instances (not raw addresses) are kept so a
--- destroyed atmosphere can be detected before anything is written to its old memory.
--- Defined once so hot paths don't allocate a new closure per instance
 local function ParentOf(i) return i.Parent end
 local function AddressOf(i) return i.Address end
 local function ClassOf(i) return i.ClassName end
@@ -1665,10 +1743,9 @@ local function CollectAtmospheres(root, deep, out, seen)
     end
 end
 
--- Zeroes one atmosphere's density if it isn't already 0. Returns true if it is alive.
 local function FixAtmosphere(inst)
     local okP, parent = pcall(ParentOf, inst)
-    if not okP or not parent then return false end -- destroyed / removed
+    if not okP or not parent then return false end
     local okA, addr = pcall(AddressOf, inst)
     if not okA or not addr then return false end
     for _, prop in ipairs(ATMOS_PROPS) do
@@ -1686,10 +1763,6 @@ local function FixAtmosphere(inst)
     return true
 end
 
--- Pushes Lighting.FogEnd far away so classic fog can't wash out the screen.
--- Runs every frame so a value the game rewrites is corrected immediately.
--- Cheap on purpose (one cached address, one read, one write) and driven by its own loop below,
--- so scans in the Atmosphere loop can't stall it.
 local LightingAddr
 local function ClearLegacyFog()
     if not LightingAddr then
@@ -1705,17 +1778,11 @@ local function ClearLegacyFog()
     end
 end
 
--- Debug helper: watches the game's own fog for 4 seconds (turn "No Lighting Fog" OFF first)
--- and reports how it changes, so we can tell whether it is rewritten every frame or only
--- tweened now and then. Results go to the console and a notification.
 local function SampleFog()
     if not FOG_END_OFF then
         Nexa:Notify({ Title = "Fog", Content = "No FogEnd offset in the offsets list.", Type = "error", Duration = 3 })
         return
     end
-    -- Works with the toggle on or off:
-    --   off: shows how the game's own FogEnd behaves
-    --   on:  "below100k" counts how often something put the fog back after we pushed it away
     local toggleOn = Get("no_legacy_fog") and true or false
     local okA, addr = pcall(function() return game:GetService("Lighting").Address end)
     if not okA or not addr then return end
@@ -1761,6 +1828,26 @@ actionSec:AddButton({
     Callback = function() task.spawn(SampleFog) end,
 })
 
+actionSec:AddButton({
+    Title = "",
+    ButtonText = "Unload Script",
+    Variant = "danger",
+    Expand = true,
+    Callback = function()
+        task.spawn(function()
+            pcall(function() Nexa:Destroy() end)
+            pcall(function()
+                local env = type(getgenv) == "function" and getgenv() or nil
+                for _, k in ipairs({ "Nexa", "UI", "DrawingUI" }) do
+                    if env and env[k] == Nexa then env[k] = nil end
+                    if rawget(_G, k) == Nexa then _G[k] = nil end
+                    if type(shared) == "table" and shared[k] == Nexa then shared[k] = nil end
+                end
+            end)
+        end)
+    end,
+})
+
 local function RestoreLegacyFog()
     if FogEndOriginal and LightingAddr and FOG_END_OFF then
         pcall(memory_write, "float", LightingAddr + FOG_END_OFF, FogEndOriginal)
@@ -1768,15 +1855,10 @@ local function RestoreLegacyFog()
     FogEndOriginal = nil
 end
 
--- Runs every frame. Two scans keep it current when you change area:
---  fast (0.5s): Lighting, camera, Terrain, direct children of workspace
---  deep (5s):   everything under workspace (area folders, etc.)
 local function ApplyNoFog(now)
     if now >= nextFastScan then
         nextFastScan = now + 0.5
         local out, seen = {}, {}
-        -- Small, cheap scan only (Lighting + camera). The old whole-workspace scan stalled the
-        -- script for long enough that the Lighting fog fix couldn't run and the fog flashed.
         CollectAtmospheres(game:GetService("Lighting"), true, out, seen)
         CollectAtmospheres(workspace.CurrentCamera, true, out, seen)
         AtmosFast = out
@@ -1792,7 +1874,6 @@ local function ApplyNoFog(now)
     Status.atmos = count
 end
 
--- Puts back saved values. onlyInactive = true restores just the effects whose toggle is now off.
 local function RestoreAtmosphere(onlyInactive)
     for inst, saved in pairs(AtmosOriginal) do
         pcall(function()
@@ -1815,95 +1896,201 @@ end
 
 task.spawn(function()
     local wasOn, lastState = false, ""
+    local cFog = Controls.no_fog
     while Nexa:IsAlive() do
-        task.wait()
-        local fog = Get("no_fog") and true or false
-        local on = fog
+        local fog = cFog.Value and true or false
         local state = fog and "1" or "0"
-        if on then
-            if state ~= lastState then pcall(RestoreAtmosphere, true) end -- a toggle was switched off
+        if fog then
+            if state ~= lastState then pcall(RestoreAtmosphere, true) end
             pcall(ApplyNoFog, os.clock())
-        elseif wasOn then
-            pcall(RestoreAtmosphere) -- everything off: full restore
+            task.wait()
+        else
+            if wasOn then pcall(RestoreAtmosphere) end
+            task.wait(0.25) -- idle: only check the toggle a few times a second
         end
-        wasOn, lastState = on, state
+        wasOn, lastState = fog, state
     end
 end)
 
--- Dedicated Lighting fog loop: nothing else runs here, so the correction lands as early as possible each frame.
 task.spawn(function()
     local wasOn = false
+    local cLegacy = Controls.no_legacy_fog
     while Nexa:IsAlive() do
-        task.wait()
-        if FOG_END_OFF and Get("no_legacy_fog") then
+        if FOG_END_OFF and cLegacy.Value then
             ClearLegacyFog()
             wasOn = true
-        elseif wasOn then
-            RestoreLegacyFog()
-            wasOn = false
+            task.wait()
+        else
+            if wasOn then
+                RestoreLegacyFog()
+                wasOn = false
+            end
+            task.wait(0.25)
         end
     end
     RestoreLegacyFog()
 end)
 
---------------------------------------------------------
 -- MISC LOGIC: REMOVE WINDS
---------------------------------------------------------
-local WindWalls = {}   -- [part] = original CFrame
+do
+    local WindWalls = {}   -- part -> original CFrame
+    local WindList = {}    -- cached SuperWall parts (the big descendants scan only runs every few seconds)
+    local nextWindScan = 0
 
--- No Connect() available here, so this is polled while the toggle is on.
--- A wall is only moved if it is still above the map, so walls the game
--- adds or puts back are caught on the next pass.
-local function MoveWindWalls()
-    local floor = workspace:FindFirstChild("Layer2Floor1")
-    if not floor then return end
-    local ok, list = pcall(function() return floor:GetDescendants() end)
-    if not ok or type(list) ~= "table" then return end
-    for _, v in ipairs(list) do
-        if v.Name == "SuperWall" then
-            pcall(function()
-                if v:IsA("BasePart") and v.Position.Y > -5000 then
-                    if WindWalls[v] == nil then WindWalls[v] = v.CFrame end
-                    v.CFrame = v.CFrame + Vector3.new(0, -10000, 0)
+    local function MoveWall(v)
+        if v.Position.Y > -5000 then
+            if WindWalls[v] == nil then WindWalls[v] = v.CFrame end
+            v.CFrame = v.CFrame + Vector3.new(0, -10000, 0)
+        end
+    end
+
+    local function MoveWindWalls(now)
+        if now >= nextWindScan then
+            nextWindScan = now + 5
+            WindList = {}
+            local floor = workspace:FindFirstChild("Layer2Floor1")
+            if floor then
+                local ok, list = pcall(function() return floor:GetDescendants() end)
+                if ok and type(list) == "table" then
+                    for _, v in ipairs(list) do
+                        if v.Name == "SuperWall" then WindList[#WindList + 1] = v end
+                    end
                 end
+            end
+        end
+        for _, v in ipairs(WindList) do pcall(MoveWall, v) end
+    end
+
+    local function RestoreWinds()
+        for part, cf in pairs(WindWalls) do
+            pcall(function() part.CFrame = cf end)
+        end
+        WindWalls = {}
+        WindList = {}
+        nextWindScan = 0
+    end
+
+    Nexa:OnDestroy(function() pcall(RestoreWinds) end)
+
+    task.spawn(function()
+        local wasOn = false
+        local cWinds = Controls.remove_winds
+        while Nexa:IsAlive() do
+            local on = cWinds.Value and true or false
+            if on then
+                pcall(MoveWindWalls, os.clock())
+                task.wait(0.5)
+            else
+                if wasOn then pcall(RestoreWinds) end
+                task.wait(0.5)
+            end
+            wasOn = on
+        end
+    end)
+end
+
+-- MISC LOGIC: FPS BOOST
+-- Removes the sea / water parts. One-shot when the toggle is switched on; the water tags are then
+-- kept clear while the toggle stays on. Every step is pcall'd on its own so one missing object
+-- (e.g. SeaAttach already gone) doesn't stop the rest.
+do
+    local function Step(name, fn)
+        local ok, err = pcall(fn)
+        if not ok then Log("FPS Boost: " .. name .. " failed: " .. tostring(err)) end
+        return ok
+    end
+
+    local function GraphicsMode()
+        local rs = game:GetService("ReplicatedStorage")
+        for _, inst in ipairs({ Players.LocalPlayer, rs, workspace }) do
+            local ok, v = pcall(function() return inst:GetAttribute("GraphicsMode") end)
+            if ok and v then return v end
+        end
+        return nil
+    end
+
+    local function ClearWaterTags()
+        local cs = game:GetService("CollectionService")
+        for _, part in ipairs(cs:GetTagged("WaterPart")) do
+            cs:RemoveTag(part, "WaterPart")
+        end
+    end
+
+    local function RunBoost()
+        local lp = Players.LocalPlayer
+        local rs = game:GetService("ReplicatedStorage")
+        local scripts = lp.PlayerScripts
+        local seaClient, actor
+
+        Step("SeaClient", function()
+            seaClient = scripts:FindFirstChild("SeaClient")
+                or game:GetService("StarterPlayer").StarterPlayerScripts.SeaClient:Clone()
+        end)
+        Step("Actor", function()
+            actor = Instance.new("Actor")
+            actor.Parent = scripts
+        end)
+        Step("SeaAttach", function() workspace.Terrain.SeaAttach:Destroy() end)
+
+        if GraphicsMode() == "low" then
+            Step("SkinnedSea (assets)", function()
+                local mesh = rs.Assets.SeaMesh
+                mesh.SkinnedSea:Destroy()
+                local far = mesh.FarSea:Clone()
+                far.Parent = mesh
+                far.Name = "SkinnedSea"
             end)
+            Step("disable SeaClient", function() seaClient.Disabled = true end)
         end
-    end
-end
 
-local function RestoreWinds()
-    for part, cf in pairs(WindWalls) do
-        pcall(function() part.CFrame = cf end)
+        Step("SkinnedSea (workspace)", function() workspace.SkinnedSea:Destroy() end)
+
+        -- re-parent SeaClient under the Actor and bounce it so it restarts without the sea
+        task.wait(0.15)
+        Step("parent SeaClient", function() seaClient.Parent = actor end)
+        task.wait(0.15)
+        Step("enable", function() seaClient.Disabled = false end)
+        task.wait(0.15)
+        Step("disable", function() seaClient.Disabled = true end)
+        task.wait(0.15)
+        Step("enable", function() seaClient.Disabled = false end)
+
+        Step("water tags", ClearWaterTags)
+        Log("FPS Boost applied")
+        Nexa:Notify({ Title = "FPS Boost", Content = "Sea and water removed.", Type = "success", Duration = 3 })
     end
-    WindWalls = {}
+
+    task.spawn(function()
+        local cBoost = Controls.fps_boost
+        local was = false
+        local lastTags = 0
+        while Nexa:IsAlive() do
+            local on = cBoost.Value and true or false
+            if on and not was then
+                task.spawn(RunBoost)
+            end
+            -- stand-in for the original "tag added" signal: keep removing new WaterPart tags
+            if on and os.clock() - lastTags >= 1 then
+                lastTags = os.clock()
+                pcall(ClearWaterTags)
+            end
+            was = on
+            task.wait(on and 0.5 or 0.5)
+        end
+    end)
 end
 
 task.spawn(function()
-    local wasOn = false
-    while Nexa:IsAlive() do
-        task.wait(0.5)
-        local on = Get("remove_winds") and true or false
-        if on then
-            pcall(MoveWindWalls)
-        elseif wasOn then
-            pcall(RestoreWinds)
-        end
-        wasOn = on
-    end
-end)
-
--- Grab ping on inject and set Ping Comp accordingly (timings are tuned for ~60 ping)
-task.spawn(function()
-    task.wait(1) -- let network stats populate
+    task.wait(1)
     ApplyPing(6, true)
 end)
 
 Nexa:OnDestroy(function()
     pcall(RestoreAtmosphere)
     pcall(RestoreLegacyFog)
-    pcall(RestoreWinds)
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
     Releases = {}
+    Queue, Active, Tracked, TrackedCount = {}, {}, {}, 0
 end)
 
 task.spawn(function()
@@ -1911,7 +2098,11 @@ task.spawn(function()
 
     while Nexa:IsAlive() do
         local now = os.clock()
-        Status.loopMs = Status.loopMs * 0.8 + (now - lastLoop) * 1000 * 0.2
+        -- nothing to scan, track or release: sleep longer instead of spinning every frame
+        local idle = not cOn.Value and TrackedCount == 0 and #Releases == 0
+        if not idle then
+            Status.loopMs = Status.loopMs * 0.8 + (now - lastLoop) * 1000 * 0.2
+        end
         lastLoop = now
 
         if #Releases > 0 then
@@ -1929,7 +2120,6 @@ task.spawn(function()
                 local ok, err = pcall(ScanStep, now)
                 if not ok and err ~= lastErr then lastErr = err warn("[Deepwoken] scan error: " .. tostring(err)) end
             end
-            -- Only run the due-action check while there is queued work.
             if #Queue > 0 then
                 local ok, err = pcall(FireDue)
                 if not ok and err ~= lastErr then lastErr = err warn("[Deepwoken] fire error: " .. tostring(err)) end
@@ -1945,8 +2135,8 @@ task.spawn(function()
             if not ok and err ~= lastErr then lastErr = err warn("[Deepwoken] tracker error: " .. tostring(err)) end
         end
 
-        UpdateStatusUI(now)
-        task.wait()
+        pcall(UpdateStatusUI, now)
+        if idle then task.wait(0.1) else task.wait() end
     end
 
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
