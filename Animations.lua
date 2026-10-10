@@ -7,6 +7,8 @@ return {-- ✅ / ❌
 
     ["86527092652774"] = 0.6, -- Single Diagonal Slash✅
 
+    ["86527092652774"] = 0.6, -- Upsweep
+
     ["134600514326413"] = { -- Stomp into Slash
         type = "parry",
         t = {0.7, 2.0}
