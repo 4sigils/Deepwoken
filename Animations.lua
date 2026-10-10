@@ -18,18 +18,18 @@ return {-- ✅ / ❌
     -- Unparryable: Q normally, F with "Parry Unparryables" enabled
     ["124963391435150"] = { -- Red Double Slash
         type = "dodge",
-        t = {0.9, 1.725}
+        t = {0.9, 1.625}
     },
 
     ["129588531110694"] = { -- Crouch Low Slash
         type = "crouch",
-        t = 0.5
+        t = 0.475
     },
 
     ["112423929319383"] = { -- Jump Stomps + Slashes✅
         {type = "jump",  t = 0.4},
         {type = "parry", t = 1.2},
-        {type = "parry", t = 1.8},
+        {type = "parry", t = 1.725},
         {type = "jump",  t = 2.3},
     },
 
