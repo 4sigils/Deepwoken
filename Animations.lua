@@ -41,7 +41,7 @@ return {-- ✅ / ❌
     },
 
     ["87084893315096"] = { -- Ultimate
-        {type = "parry", t = 0.5},
+        {type = "parry", t = 0.35},
         {type = "parry", t = 0.9},
         {type = "dodge", t = 1.45},
         {type = "dodge", t = 1.9},
