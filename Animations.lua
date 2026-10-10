@@ -18,7 +18,7 @@ return {-- ✅ / ❌
     -- Unparryable: Q normally, F with "Parry Unparryables" enabled
     ["124963391435150"] = { -- Red Double Slash
         type = "dodge",
-        t = {0.9, 1.35}
+        t = {0.9, 1.5}
     },
 
     ["129588531110694"] = { -- Crouch Low Slash
