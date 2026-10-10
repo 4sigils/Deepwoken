@@ -1,11 +1,11 @@
-return {
+return {-- ✅ / ❌
     -- Shogun
-    ["118154222392812"] = { -- Double Slash
+    ["118154222392812"] = { -- Green Double Slash✅
         type = "parry",
         t = {0.65, 1.45}
     },
 
-    ["86527092652774"] = 0.6, -- Single Diagonal Slash
+    ["86527092652774"] = 0.6, -- Single Diagonal Slash✅
 
     ["134600514326413"] = { -- Stomp into Slash
         type = "parry",
@@ -24,7 +24,7 @@ return {
         t = 0.5
     },
 
-    ["112423929319383"] = { -- Jump Stomps + Slashes
+    ["112423929319383"] = { -- Jump Stomps + Slashes✅
         {type = "jump",  t = 0.4},
         {type = "parry", t = 1.2},
         {type = "parry", t = 1.8},
