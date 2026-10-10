@@ -900,9 +900,15 @@ Reg("auto_ragdoll_cancel", generalSec:AddToggle({
 local worldSec = visualsTab:AddSection("World", "Environment tweaks.", { Column = "left" })
 Reg("no_fog", worldSec:AddToggle({
     Title = "No Fog",
-    Tooltip = "Sets Density to 0 on every Atmosphere in Lighting. Restores the original values when turned off.",
+    Tooltip = "Sets Density to 0 on every Atmosphere. Restores the original values when turned off.",
     Default = false,
     ConfigKey = "deepwoken.visuals.noFog",
+}))
+Reg("no_legacy_fog", worldSec:AddToggle({
+    Title = "No Lighting Fog",
+    Tooltip = "Pushes Lighting.FogEnd far away (older-style fog some areas use).",
+    Default = false,
+    ConfigKey = "deepwoken.visuals.noLegacyFog",
 }))
 
 --------------------------------------------------------
@@ -1369,12 +1375,66 @@ end
 --------------------------------------------------------
 
 -- Auto Ritual ------------------------------------------
-local textToKeycode = {
-    ["Z"] = 0x5A,
-    ["X"] = 0x58,
-    ["C"] = 0x43,
-    ["V"] = 0x56,
+-- How the game's SpellClient works (from the decompiled script):
+--  * Every ritual symbol is a Frame in SpellGui.SpellFrame.Symbols holding a TextLabel. The label
+--    text is the key YOU have bound to that spell input, so pressing what the label shows is correct
+--    for any keybind setup (not just Z/X/C/V).
+--  * Frames are created in sequence order, 80px apart. When the server accepts a key, progress
+--    advances: finished frames hide and the remaining ones slide left.
+--  * A wrong or mistimed key gives an "error" shake and no progress.
+-- So this presses ONE key at a time and waits for the game to confirm progress before the next one,
+-- retrying a key that wasn't accepted, instead of firing the whole sequence blind.
+
+local RitualNamedKeys = {
+    SPACE = 0x20, TAB = 0x09, RETURN = 0x0D, ENTER = 0x0D,
+    LEFTSHIFT = 0xA0, RIGHTSHIFT = 0xA1, LEFTCONTROL = 0xA2, RIGHTCONTROL = 0xA3,
+    LEFTALT = 0xA4, RIGHTALT = 0xA5,
 }
+
+-- Turns a keybind label ("Z", "x", "3", "Space"...) into a virtual key code
+local function RitualKey(text)
+    if type(text) ~= "string" then return nil end
+    local t = string.upper((text:gsub("%s+", "")))
+    if #t == 1 then
+        local b = string.byte(t)
+        if (b >= 65 and b <= 90) or (b >= 48 and b <= 57) then return b end -- A-Z, 0-9
+    end
+    return RitualNamedKeys[t]
+end
+
+local function PosX(inst)
+    local ok, x = pcall(function() return inst.AbsolutePosition.X end)
+    if ok and type(x) == "number" then return x end
+    return nil
+end
+
+local function IsVisible(inst)
+    local ok, v = pcall(function() return inst.Visible end)
+    if not ok then return false end -- destroyed
+    return v ~= false
+end
+
+local function SpellOpen(frame)
+    local ok, y = pcall(function() return frame.AbsoluteSize.Y end)
+    return ok and type(y) == "number" and y >= 10
+end
+
+-- Waits until the game shows the key was accepted: the pressed frame hides, the next frame
+-- slides left of where it was, or the whole spell frame closes. Returns false on timeout.
+local function WaitRitualAccepted(spellFrame, frames, k, nextX0)
+    local t0 = os.clock()
+    while Nexa:IsAlive() and os.clock() - t0 < 1.0 do
+        task.wait(0.02)
+        if not SpellOpen(spellFrame) then return true end
+        if not IsVisible(frames[k]) then return true end
+        local nxt = frames[k + 1]
+        if nxt and nextX0 then
+            local x = PosX(nxt)
+            if x and x < nextX0 - 2 then return true end
+        end
+    end
+    return false
+end
 
 -- One pass of the ritual check. Returns early whenever the spell GUI isn't ready.
 local function RitualStep()
@@ -1384,31 +1444,50 @@ local function RitualStep()
     if not spellGui then return end
 
     local spellFrame = spellGui:FindFirstChild("SpellFrame")
-    if not spellFrame then return end
-    if spellFrame.AbsoluteSize.Y < 10 then return end
+    if not spellFrame or not SpellOpen(spellFrame) then return end
 
     local symbols = spellFrame:FindFirstChild("Symbols")
     if not symbols then return end
 
-    local sequence = {}
+    -- Collect the symbol frames and put them in on-screen (left to right) order
+    local frames = {}
     for _, frame in ipairs(symbols:GetChildren()) do
-        local label = frame:FindFirstChild("TextLabel")
-        if label and textToKeycode[label.Text] then
-            table.insert(sequence, textToKeycode[label.Text])
-        end
+        if frame:FindFirstChild("TextLabel") then frames[#frames + 1] = frame end
     end
-    if #sequence == 0 then return end
+    if #frames == 0 then return end
 
-    task.wait(0.25)
-    for _, key in ipairs(sequence) do
-        pcall(keypress, key)
-        task.wait(0.05)
-        pcall(keyrelease, key)
-        task.wait(0.1)
+    local xs, allX = {}, true
+    for _, f in ipairs(frames) do
+        xs[f] = PosX(f)
+        if not xs[f] then allX = false end
+    end
+    if allX then table.sort(frames, function(a, b) return xs[a] < xs[b] end) end
+
+    task.wait(0.25) -- let the open animation settle
+    if not SpellOpen(spellFrame) then return end
+
+    for k, frame in ipairs(frames) do
+        local label = frame:FindFirstChild("TextLabel")
+        local key = label and RitualKey(label.Text)
+        if not key then
+            warn("[Deepwoken] ritual: don't know the key for label '" .. tostring(label and label.Text) .. "'")
+            break
+        end
+
+        local accepted = false
+        for _ = 1, 3 do
+            if not Nexa:IsAlive() or not SpellOpen(spellFrame) then break end
+            local nextX0 = frames[k + 1] and PosX(frames[k + 1]) or nil
+            pcall(keypress, key)
+            task.wait(0.04)
+            pcall(keyrelease, key)
+            if WaitRitualAccepted(spellFrame, frames, k, nextX0) then accepted = true break end
+        end
+        if not accepted then break end
     end
 
     -- wait for the spell frame to close before checking again
-    while Nexa:IsAlive() and spellFrame.AbsoluteSize.Y >= 10 do
+    while Nexa:IsAlive() and SpellOpen(spellFrame) do
         task.wait(0.1)
     end
 end
@@ -1486,30 +1565,50 @@ Nexa:Notify({
 -- VISUALS LOGIC: NO FOG
 --------------------------------------------------------
 -- Density is a float inside the Atmosphere instance. The offset comes from the
--- offsets JSON when it has one, otherwise the hardcoded 0xE8.
+-- offsets JSON when it has one; otherwise the hardcoded 0xE8.
 local ATMOS_DENSITY_OFF = 0xE8
+local ATMOS_PROPS = {}     -- { {name=, off=}, ... }
 pcall(function()
     local a = offsets.Atmosphere
     if type(a) == "table" and type(a.Density) == "number" then ATMOS_DENSITY_OFF = a.Density end
+    ATMOS_PROPS[#ATMOS_PROPS + 1] = { name = "Density", off = ATMOS_DENSITY_OFF }
 end)
+if #ATMOS_PROPS == 0 then ATMOS_PROPS[1] = { name = "Density", off = ATMOS_DENSITY_OFF } end
 
-local AtmosOriginal = {}   -- [instance] = original density
+-- Which toggle controls which property
+local function PropOn(name)
+    return Get("no_fog") and true or false -- Density is the only Atmosphere property touched
+end
+
+-- Older-style fog on Lighting itself (FogEnd/FogStart). Only used if the offsets JSON has FogEnd.
+local FOG_END_OFF
+pcall(function()
+    local l = offsets.Lighting
+    if type(l) == "table" and type(l.FogEnd) == "number" then FOG_END_OFF = l.FogEnd end
+end)
+local FogEndOriginal
+
+local AtmosOriginal = {}   -- [instance] = { [propName] = original value }
 local AtmosFast, AtmosDeep = {}, {}   -- lists of Atmosphere instances
 local nextFastScan, nextDeepScan = 0, 0
 
 -- Collects Atmosphere instances under root. Instances (not raw addresses) are kept so a
 -- destroyed atmosphere can be detected before anything is written to its old memory.
+-- Defined once so hot paths don't allocate a new closure per instance
+local function ParentOf(i) return i.Parent end
+local function AddressOf(i) return i.Address end
+local function ClassOf(i) return i.ClassName end
+local function DescendantsOf(i) return i:GetDescendants() end
+local function ChildrenOf(i) return i:GetChildren() end
+
 local function CollectAtmospheres(root, deep, out, seen)
     if not root then return end
-    local ok, list = pcall(function()
-        if deep then return root:GetDescendants() end
-        return root:GetChildren()
-    end)
+    local ok, list = pcall(deep and DescendantsOf or ChildrenOf, root)
     if not ok or type(list) ~= "table" then return end
     for _, inst in ipairs(list) do
-        local okC, cls = pcall(function() return inst.ClassName end)
+        local okC, cls = pcall(ClassOf, inst)
         if okC and cls == "Atmosphere" then
-            local okA, addr = pcall(function() return inst.Address end)
+            local okA, addr = pcall(AddressOf, inst)
             if okA and addr and not seen[addr] then
                 seen[addr] = true
                 out[#out + 1] = inst
@@ -1520,17 +1619,105 @@ end
 
 -- Zeroes one atmosphere's density if it isn't already 0. Returns true if it is alive.
 local function FixAtmosphere(inst)
-    local okP, parent = pcall(function() return inst.Parent end)
+    local okP, parent = pcall(ParentOf, inst)
     if not okP or not parent then return false end -- destroyed / removed
-    local okA, addr = pcall(function() return inst.Address end)
+    local okA, addr = pcall(AddressOf, inst)
     if not okA or not addr then return false end
-    local target = addr + ATMOS_DENSITY_OFF
-    local ok, cur = pcall(memory_read, "float", target)
-    if ok and type(cur) == "number" and cur ~= 0 then
-        if AtmosOriginal[inst] == nil then AtmosOriginal[inst] = cur end
-        pcall(memory_write, "float", target, 0)
+    for _, prop in ipairs(ATMOS_PROPS) do
+      if PropOn(prop.name) then
+        local target = addr + prop.off
+        local ok, cur = pcall(memory_read, "float", target)
+        if ok and type(cur) == "number" and cur ~= 0 then
+            local saved = AtmosOriginal[inst]
+            if not saved then saved = {} AtmosOriginal[inst] = saved end
+            if saved[prop.name] == nil then saved[prop.name] = cur end
+            pcall(memory_write, "float", target, 0)
+        end
+      end
     end
     return true
+end
+
+-- Pushes Lighting.FogEnd far away so classic fog can't wash out the screen.
+-- Runs every frame so a value the game rewrites is corrected immediately.
+-- Cheap on purpose (one cached address, one read, one write) and driven by its own loop below,
+-- so scans in the Atmosphere loop can't stall it.
+local LightingAddr
+local function ClearLegacyFog()
+    if not LightingAddr then
+        local ok, addr = pcall(function() return game:GetService("Lighting").Address end)
+        if not ok or not addr then return end
+        LightingAddr = addr
+    end
+    local target = LightingAddr + FOG_END_OFF
+    local ok2, cur = pcall(memory_read, "float", target)
+    if ok2 and type(cur) == "number" and cur > 0 and cur < 100000 then
+        if FogEndOriginal == nil then FogEndOriginal = cur end
+        pcall(memory_write, "float", target, 100000)
+    end
+end
+
+-- Debug helper: watches the game's own fog for 4 seconds (turn "No Lighting Fog" OFF first)
+-- and reports how it changes, so we can tell whether it is rewritten every frame or only
+-- tweened now and then. Results go to the console and a notification.
+local function SampleFog()
+    if not FOG_END_OFF then
+        Nexa:Notify({ Title = "Fog", Content = "No FogEnd offset in the offsets list.", Type = "error", Duration = 3 })
+        return
+    end
+    -- Works with the toggle on or off:
+    --   off: shows how the game's own FogEnd behaves
+    --   on:  "below100k" counts how often something put the fog back after we pushed it away
+    local toggleOn = Get("no_legacy_fog") and true or false
+    local okA, addr = pcall(function() return game:GetService("Lighting").Address end)
+    if not okA or not addr then return end
+
+    local startOff
+    pcall(function()
+        if type(offsets.Lighting.FogStart) == "number" then startOff = offsets.Lighting.FogStart end
+    end)
+
+    local frames, changes, lastEnd, below = 0, 0, nil, 0
+    local minEnd, maxEnd = math.huge, -math.huge
+    local firstEnd, lastSeenEnd, startVal
+    local t0 = os.clock()
+    while os.clock() - t0 < 4 and Nexa:IsAlive() do
+        task.wait()
+        local ok, cur = pcall(memory_read, "float", addr + FOG_END_OFF)
+        if ok and type(cur) == "number" then
+            frames = frames + 1
+            if firstEnd == nil then firstEnd = cur end
+            if lastEnd ~= nil and math.abs(cur - lastEnd) > 0.01 then changes = changes + 1 end
+            if cur < 100000 then below = below + 1 end
+            lastEnd, lastSeenEnd = cur, cur
+            if cur < minEnd then minEnd = cur end
+            if cur > maxEnd then maxEnd = cur end
+        end
+    end
+    if startOff then
+        local ok, v = pcall(memory_read, "float", addr + startOff)
+        if ok then startVal = v end
+    end
+
+    local msg = string.format("[toggle %s] FogEnd: %d reads, changed %d times, below100k %d. first %.0f, last %.0f, min %.0f, max %.0f%s",
+        toggleOn and "ON" or "OFF", frames, changes, below, firstEnd or 0, lastSeenEnd or 0,
+        minEnd == math.huge and 0 or minEnd, maxEnd == -math.huge and 0 or maxEnd,
+        startVal and string.format(", FogStart %.0f", startVal) or "")
+    print("[Deepwoken] " .. msg)
+    Nexa:Notify({ Title = "Fog sample", Content = msg, Type = "success", Duration = 8 })
+end
+
+actionSec:AddButton({
+    Title = "Sample Fog",
+    ButtonText = "Sample Fog (4s)",
+    Callback = function() task.spawn(SampleFog) end,
+})
+
+local function RestoreLegacyFog()
+    if FogEndOriginal and LightingAddr and FOG_END_OFF then
+        pcall(memory_write, "float", LightingAddr + FOG_END_OFF, FogEndOriginal)
+    end
+    FogEndOriginal = nil
 end
 
 -- Runs every frame. Two scans keep it current when you change area:
@@ -1540,17 +1727,11 @@ local function ApplyNoFog(now)
     if now >= nextFastScan then
         nextFastScan = now + 0.5
         local out, seen = {}, {}
+        -- Small, cheap scan only (Lighting + camera). The old whole-workspace scan stalled the
+        -- script for long enough that the Lighting fog fix couldn't run and the fog flashed.
         CollectAtmospheres(game:GetService("Lighting"), true, out, seen)
         CollectAtmospheres(workspace.CurrentCamera, true, out, seen)
-        CollectAtmospheres(workspace.Terrain, false, out, seen)
-        CollectAtmospheres(workspace, false, out, seen)
         AtmosFast = out
-    end
-    if now >= nextDeepScan then
-        nextDeepScan = now + 5
-        local out, seen = {}, {}
-        CollectAtmospheres(workspace, true, out, seen)
-        AtmosDeep = out
     end
 
     local count = 0
@@ -1563,31 +1744,58 @@ local function ApplyNoFog(now)
     Status.atmos = count
 end
 
-local function RestoreAtmosphere()
-    for inst, original in pairs(AtmosOriginal) do
+-- Puts back saved values. onlyInactive = true restores just the effects whose toggle is now off.
+local function RestoreAtmosphere(onlyInactive)
+    for inst, saved in pairs(AtmosOriginal) do
         pcall(function()
-            if inst.Parent then
-                memory_write("float", inst.Address + ATMOS_DENSITY_OFF, original)
+            local alive = inst.Parent ~= nil
+            local addr = alive and inst.Address
+            for _, prop in ipairs(ATMOS_PROPS) do
+                local original = saved[prop.name]
+                if original ~= nil and (not onlyInactive or not PropOn(prop.name)) then
+                    if alive then memory_write("float", addr + prop.off, original) end
+                    saved[prop.name] = nil
+                end
             end
         end)
     end
+    if onlyInactive then return end
     AtmosOriginal = {}
     AtmosFast, AtmosDeep = {}, {}
     nextFastScan, nextDeepScan = 0, 0
 end
 
 task.spawn(function()
+    local wasOn, lastState = false, ""
+    while Nexa:IsAlive() do
+        task.wait()
+        local fog = Get("no_fog") and true or false
+        local on = fog
+        local state = fog and "1" or "0"
+        if on then
+            if state ~= lastState then pcall(RestoreAtmosphere, true) end -- a toggle was switched off
+            pcall(ApplyNoFog, os.clock())
+        elseif wasOn then
+            pcall(RestoreAtmosphere) -- everything off: full restore
+        end
+        wasOn, lastState = on, state
+    end
+end)
+
+-- Dedicated Lighting fog loop: nothing else runs here, so the correction lands as early as possible each frame.
+task.spawn(function()
     local wasOn = false
     while Nexa:IsAlive() do
         task.wait()
-        local on = Get("no_fog") and true or false
-        if on then
-            pcall(ApplyNoFog, os.clock())
+        if FOG_END_OFF and Get("no_legacy_fog") then
+            ClearLegacyFog()
+            wasOn = true
         elseif wasOn then
-            pcall(RestoreAtmosphere)
+            RestoreLegacyFog()
+            wasOn = false
         end
-        wasOn = on
     end
+    RestoreLegacyFog()
 end)
 
 --------------------------------------------------------
@@ -1644,6 +1852,7 @@ end)
 
 Nexa:OnDestroy(function()
     pcall(RestoreAtmosphere)
+    pcall(RestoreLegacyFog)
     pcall(RestoreWinds)
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
     Releases = {}
