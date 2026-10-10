@@ -1,46 +1,51 @@
 return {
-    -- Parry animations
-    ["118154222392812"] = {
+    -- Shogun
+    ["118154222392812"] = { -- Double Slash
         type = "parry",
-        t = {0.7, 1.5}
-    }, -- Double Slash
+        t = {0.65, 1.45}
+    },
 
     ["86527092652774"] = 0.6, -- Single Diagonal Slash
 
-    ["134600514326413"] = {
+    ["134600514326413"] = { -- Stomp into Slash
         type = "parry",
-        t = {0.7, 1.2}
-    }, -- Stomp into Slash
+        t = {0.7, 2.0}
+    },
 
     -- Dodge animations
     -- Unparryable: Q normally, F with "Parry Unparryables" enabled
-    ["124963391435150"] = {
+    ["124963391435150"] = { -- Red Double Slash
         type = "dodge",
-        t = {0.5, 1.0}
-    }, -- Red Double Slash
+        t = {0.9, 1.6}
+    },
 
-    -- Crouch example
-    -- This is intentionally disabled because it uses the same
-    -- animation ID as the dodge above.
-    -- ["124963391435150"] = {
-    --     type = "crouch",
-    --     t = 0.3
-    -- },
+    ["129588531110694"] = { -- Crouch Low Slash
+        type = "crouch",
+        t = 0.5
+    },
 
-    -- Hybrid / sequence
-    -- Jump + parry in one animation
-    ["112423929319383"] = {
+    ["112423929319383"] = { -- Jump Stomps + Slashes
         {type = "jump",  t = 0.4},
-        {type = "parry", t = 0.9},
-        {type = "parry", t = 1.1},
-        {type = "jump",  t = 1.5},
-    }, -- Jump Stomps with Slashes
+        {type = "parry", t = 1.2},
+        {type = "parry", t = 1.8},
+        {type = "jump",  t = 2.3},
+    },
 
-    -- Flurry Combo
-    ["76782656543761"] = {
-        {type = "parry", t = 0.3},
-        {type = "dodge", t = 0.5},
-        {type = "parry", t = 0.6},
-        {type = "parry", t = 0.8},
-    },  
+    ["76782656543761"] = { -- Flurry
+        {type = "parry", t = 0.45},
+        {type = "dodge", t = 1.2},
+        {type = "parry", t = 2.15},
+        {type = "parry", t = 2.5},
+    },
+
+    ["87084893315096"] = { -- Ultimate
+        {type = "parry", t = 0.5},
+        {type = "parry", t = 0.9},
+        {type = "dodge", t = 1.45},
+        {type = "dodge", t = 1.9},
+        {type = "parry", t = 2.7},
+        {type = "parry", t = 3.1},
+        {type = "parry", t = 3.65},
+        {type = "parry", t = 4.1},
+    },
 }
