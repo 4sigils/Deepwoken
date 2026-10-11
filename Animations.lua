@@ -9,7 +9,7 @@ return {-- ✅ / ❌
 
     ["134600514326413"] = { -- Kick into Slash
         type = "parry",
-        t = {0.675, 1.925}
+        t = {0.635, 1.925}
     },
 
     -- Dodge animations
