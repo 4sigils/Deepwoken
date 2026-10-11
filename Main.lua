@@ -5,6 +5,9 @@ local LOGO_URL = "https://cdn.discordapp.com/attachments/1402876855840804895/155
 -- Embedded 4x4 black PNG (no download, no 1920x1080 texture to decode and draw every frame)
 local BG_IMG   = "\137\080\078\071\013\010\026\010\000\000\000\013\073\072\068\082\000\000\000\004\000\000\000\004\008\006\000\000\000\169\241\158\126\000\000\000\079\073\068\065\084\120\001\001\068\000\187\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\000\255\000\000\000\255\000\000\000\255\000\000\000\255\006\090\015\241\170\028\251\110\000\000\000\000\073\069\078\068\174\066\096\130"
 
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+
 local KEY_PARRY  = 0x46 -- F
 local KEY_DODGE  = 0x51 -- Q
 local KEY_JUMP   = 0x20 -- Space
@@ -17,6 +20,8 @@ local SCAN_INTERVAL = 0.018
 local HIST_SLOTS = 10
 
 -- NEXA UI LOADER
+local Nexa
+do
 local NEXA_SOURCE = "https://raw.githubusercontent.com/OgTen/Nexa-UI/refs/heads/main/nexa-ui.lua"
 
 local function isNexaLibrary(value)
@@ -110,7 +115,8 @@ local function getNexa()
     error("[Deepwoken] Nexa executed, but no compatible Library API was exported.")
 end
 
-local Nexa = getNexa()
+Nexa = getNexa()
+end
 
 local Controls = {}
 local ConfigDirty = false -- set whenever a registered control changes; the autosave loop only writes when this is true
@@ -681,6 +687,8 @@ local mainTab       = Nexa:AddTab({ Title = "Auto Parry", Icon = "shield", Selec
 local automationTab = Nexa:AddTab({ Title = "Automation", Icon = "zap" })
 local visualsTab    = Nexa:AddTab({ Title = "Visuals", Icon = "eye" })
 local miscTab       = Nexa:AddTab({ Title = "Misc", Icon = "layers" })
+local qolTab        = Nexa:AddTab({ Title = "QOL", Icon = "zap" })
+local QolActions    = {} -- filled in by the QOL logic block further down
 local trackerTab    = Nexa:AddTab({ Title = "Tracker", Icon = "crosshair" })
 local whitelistTab  = Nexa:AddTab({ Title = "Whitelists", Icon = "users" })
 local debugTab      = Nexa:AddTab({ Title = "Debug", Icon = "search" })
@@ -756,6 +764,7 @@ end
 LoadIgnoredGuilds()
 
 -- WHITELISTS TAB: FRIENDS
+do
 local friendsSec = whitelistTab:AddSection("Friends", "Selected players will never be tracked by auto-parry.", { Column = "left" })
 local friendsDropdown
 local function GetPlayerNames()
@@ -825,7 +834,10 @@ friendsSec:AddButton({
     Callback = SaveIgnoredFriends,
 })
 
+end
+
 -- WHITELISTS TAB: GUILDS
+do
 local guildSec = whitelistTab:AddSection("Guild", "Members of selected guilds will never be tracked by auto-parry.", { Column = "right" })
 local guildDropdown
 local yourGuildStatus = guildSec:AddStatus({ Title = "Your guild", Default = "-", Tone = "muted" })
@@ -894,8 +906,10 @@ guildSec:AddButton({
     Callback = RefreshGuildDropdown,
 })
 RefreshGuildDropdown()
+end
 
 -- AUTO PARRY TAB
+do
 local parrySec = mainTab:AddSection("Auto Parry", "Targets and feint handling.", { Column = "left" })
 
 local enabledToggle = Reg("sb_parry_on", parrySec:AddToggle({
@@ -983,7 +997,10 @@ do
     autoPingToggle:OnChanged(function(v) pingSlider:SetEnabled(not v) end)
 end
 
+end
+
 -- AUTOMATION TAB
+do
 local generalSec = automationTab:AddSection("General", "Quality-of-life automation.", { Column = "left" })
 Reg("auto_ritual", generalSec:AddToggle({
     Title = "Auto Ritual",
@@ -997,35 +1014,11 @@ Reg("auto_ragdoll_cancel", generalSec:AddToggle({
     Default = false,
     ConfigKey = "deepwoken.automation.ragdollCancel",
 }))
-Reg("ritual_keys_only", generalSec:AddToggle({
-    Title = "Ritual: Key Presses Only",
-    Tooltip = "Skips the remote and types the ritual keys instead. Try this if Auto Ritual does nothing on your setup.",
-    Default = false,
-    ConfigKey = "deepwoken.automation.ritualKeysOnly",
-}))
-Reg("ritual_debug", generalSec:AddToggle({
-    Title = "Ritual Debug",
-    Tooltip = "Prints what Auto Ritual reads and sends to the console.",
-    Default = false,
-    ConfigKey = "deepwoken.automation.ritualDebug",
-}))
-Reg("ritual_delay", generalSec:AddSlider({
-    Title = "Ritual Start Delay",
-    Tooltip = "Wait after the ritual appears before typing it. Raise it if inputs go out too early (high ping / low FPS).",
-    Min = 0, Max = 1000, Step = 10, Default = 300, Suffix = "ms",
-    ConfigKey = "deepwoken.automation.ritualDelay",
-}))
-Reg("ritual_gap", generalSec:AddSlider({
-    Title = "Ritual Input Gap",
-    Tooltip = "Time between each key. Raise it if the game drops inputs.",
-    Min = 30, Max = 500, Step = 5, Default = 120, Suffix = "ms",
-    ConfigKey = "deepwoken.automation.ritualGap",
-}))
 
 -- VISUALS TAB
 
 -- MISC TAB
-local miscGeneralSec = miscTab:AddSection("General", "Miscellaneous tweaks.", { Column = "left" })
+local miscGeneralSec = miscTab:AddSection("Removals", "Strip effects and obstacles out of the world.", { Column = "left" })
 Reg("remove_winds", miscGeneralSec:AddToggle({
     Title = "Remove Winds",
     Tooltip = "Moves the SuperWall parts in Layer2Floor1 far below the map. Puts them back when turned off.",
@@ -1034,26 +1027,76 @@ Reg("remove_winds", miscGeneralSec:AddToggle({
 }))
 Reg("no_fog", miscGeneralSec:AddToggle({
     Title = "No Fog",
-    Tooltip = "Sets Density to 0 on every Atmosphere. Restores the original values when turned off.",
+    Tooltip = "Keeps Lighting fog far away and writes Atmosphere Density to 0 while enabled.",
     Default = false,
     ConfigKey = "deepwoken.visuals.noFog",
 }))
-Reg("no_legacy_fog", miscGeneralSec:AddToggle({
-    Title = "No Lighting Fog",
-    Tooltip = "Pushes Lighting.FogEnd far away (older-style fog some areas use).",
+Reg("no_shadows", miscGeneralSec:AddToggle({
+    Title = "No Shadows",
+    Tooltip = "Turns off global shadows (writes the GlobalShadows byte on Lighting). Restores the original value when turned off.",
     Default = false,
-    ConfigKey = "deepwoken.visuals.noLegacyFog",
+    ConfigKey = "deepwoken.misc.noShadows",
 }))
-Reg("fps_boost", miscGeneralSec:AddToggle({
-    Title = "FPS Boost",
-    Tooltip = "Removes the sea and water parts for more FPS. One-way: it can't be undone until you rejoin. Not saved to the auto config.",
+Reg("no_golem_turrets", miscGeneralSec:AddToggle({
+    Title = "No Golem Turrets",
+    Tooltip = "Moves the TurretTrigger parts out of reach so the turrets never fire. Puts them back when turned off.",
     Default = false,
+    ConfigKey = "deepwoken.misc.noGolemTurrets",
 }))
+Reg("no_kill_bricks", miscGeneralSec:AddToggle({
+    Title = "No Kill Bricks",
+    Tooltip = "Moves kill bricks, kill planes, life fields and chasm bricks out of reach. Puts them back when turned off.",
+    Default = false,
+    ConfigKey = "deepwoken.misc.noKillBricks",
+}))
+Reg("no_rain_sound", miscGeneralSec:AddToggle({
+    Title = "No Rain Sound",
+    Tooltip = "Sets the rain sound's playback speed to 0.",
+    Default = false,
+    ConfigKey = "deepwoken.misc.noRainSound",
+}))
+
+-- QOL TAB
+local qolStatSec = qolTab:AddSection("Stat Farming", "Answers the Intelligence and Charisma prompts for you.", { Column = "left" })
+Reg("auto_intel", qolStatSec:AddToggle({
+    Title = "Auto Intelligence",
+    Tooltip = "Solves the math question in the choice prompt and picks the matching answer (within 1).",
+    Default = false,
+    ConfigKey = "deepwoken.misc.autoIntel",
+}))
+Reg("auto_charisma", qolStatSec:AddToggle({
+    Title = "Auto Charisma",
+    Tooltip = "Sends the line quoted in the choice prompt as your chat choice.",
+    Default = false,
+    ConfigKey = "deepwoken.misc.autoCharisma",
+}))
+
+local qolHelpSec = qolTab:AddSection("Quality of Life", "Small helpers.", { Column = "right" })
+Reg("tp_objectives", qolHelpSec:AddToggle({
+    Title = "TP to Objectives",
+    Tooltip = "Flies you (200 studs/s) to the current Layer 2 objective: door and key, Galewax, blood jars, buzz obelisks, bone spears and altars. Leave it on while you progress. Not saved to the auto config.",
+    Default = false,
+    ConfigKey = "deepwoken.qol.tpObjectives",
+}))
+qolHelpSec:AddButton({
+    Title = "Knock Self",
+    ButtonText = "Knock",
+    Tooltip = "Drops you under 45 health with acid checks, then fires three fall-damage hits. Needs remote firing and KeyHandler.",
+    Callback = function() QolActions.KnockSelf() end,
+})
+qolHelpSec:AddButton({
+    Title = "Reset",
+    ButtonText = "Reset",
+    Tooltip = "Throws your root part far out of the map to reset your character.",
+    Callback = function() QolActions.Reset() end,
+})
+
+end
 
 -- CONFIG AUTOSAVE / AUTOLOAD
 do
     local CONFIG_FILE = "Deepwoken_Config.json"
-    local SKIP = { sb_t_ping = true, print_parries = true, fps_boost = true }
+    local SKIP = { sb_t_ping = true, print_parries = true, tp_objectives = true }
 
     if type(readfile) == "function" and type(isfile) == "function" then
         local ok, raw = pcall(function()
@@ -1328,6 +1371,7 @@ end
 trackSec:AddButton({ Title = "", ButtonText = "Start Tracking", Variant = "primary", Expand = true, Callback = StartTracking })
 trackSec:AddButton({ Title = "", ButtonText = "Stop All Tracking", Variant = "danger", Expand = true, Callback = StopTracking })
 
+do
 local ctrlSec = trackerTab:AddSection("Controls", "Tracker history controls.", { Column = "left" })
 ctrlSec:AddButton({
     Title = "",
@@ -1339,6 +1383,7 @@ ctrlSec:AddButton({
         if targetType:GetValue() ~= "LocalPlayer" then RefreshLists() end
     end,
 })
+end
 
 RefreshLists()
 
@@ -1411,15 +1456,18 @@ actionSec:AddButton({
     end,
 })
 
+local St = {}
+do
 local statSec = debugTab:AddSection("Status", "Live script info.", { Column = "right" })
-local stLoaded  = statSec:AddStatus({ Title = "Loaded anims",  Default = "0", Tone = "accent" })
-local stIgnored = statSec:AddStatus({ Title = "Ignored anims", Default = "0", Tone = "muted" })
-local stTrack   = statSec:AddStatus({ Title = "Tracking",      Default = "0", Tone = "success" })
-local stLast    = statSec:AddStatus({ Title = "Last",          Default = "none", Tone = "muted" })
-local stDist    = statSec:AddStatus({ Title = "Distance",      Default = "0.0", Tone = "muted" })
-local stLoop    = statSec:AddStatus({ Title = "Loop / Scan",   Default = "0 / 0 ms", Tone = "muted" })
-local stPing    = statSec:AddStatus({ Title = "Ping / Comp",   Default = "-", Tone = "muted" })
-local stAtmos   = statSec:AddStatus({ Title = "Atmospheres",   Default = "0", Tone = "muted" })
+St.Loaded = statSec:AddStatus({ Title = "Loaded anims",  Default = "0", Tone = "accent" })
+St.Ignored = statSec:AddStatus({ Title = "Ignored anims", Default = "0", Tone = "muted" })
+St.Track = statSec:AddStatus({ Title = "Tracking",      Default = "0", Tone = "success" })
+St.Last = statSec:AddStatus({ Title = "Last",          Default = "none", Tone = "muted" })
+St.Dist = statSec:AddStatus({ Title = "Distance",      Default = "0.0", Tone = "muted" })
+St.Loop = statSec:AddStatus({ Title = "Loop / Scan",   Default = "0 / 0 ms", Tone = "muted" })
+St.Ping = statSec:AddStatus({ Title = "Ping / Comp",   Default = "-", Tone = "muted" })
+St.Atmos = statSec:AddStatus({ Title = "Atmospheres",   Default = "0", Tone = "muted" })
+end
 
 local function ApplyPing(samples, silent)
     samples = samples or 1
@@ -1493,25 +1541,25 @@ local function UpdateStatusUI(now)
     -- the status badges are only on screen in the Debug tab, so don't touch them otherwise
     if Nexa.State.Tabs[Nexa.State.ActiveIndex] ~= debugTab then return end
 
-    stLoaded:SetValue(tostring(Status.loaded))
-    stIgnored:SetValue(tostring(Status.ignored))
-    stTrack:SetValue(tostring(Status.tracked))
-    stLast:SetValue(tostring(Status.last))
-    stDist:SetValue(string.format("%.1f", Status.lastDist))
-    stLoop:SetValue(string.format("%.0f / %.0f ms", Status.loopMs, Status.scanMs))
+    St.Loaded:SetValue(tostring(Status.loaded))
+    St.Ignored:SetValue(tostring(Status.ignored))
+    St.Track:SetValue(tostring(Status.tracked))
+    St.Last:SetValue(tostring(Status.last))
+    St.Dist:SetValue(string.format("%.1f", Status.lastDist))
+    St.Loop:SetValue(string.format("%.0f / %.0f ms", Status.loopMs, Status.scanMs))
     local livePing = GetPingValue()
     if livePing then
         Status.ping = livePing
         if Controls.sb_t_autoping.Value then
             UpdateAutoPing(now)
-            stPing:SetValue(string.format("%.0f / %.0f ms (auto)", AutoPing.smooth or livePing, AutoPing.comp), "accent")
+            St.Ping:SetValue(string.format("%.0f / %.0f ms (auto)", AutoPing.smooth or livePing, AutoPing.comp), "accent")
         else
-            stPing:SetValue(string.format("%.0f / %d ms", livePing, Controls.sb_t_ping.Value or 0), "accent")
+            St.Ping:SetValue(string.format("%.0f / %d ms", livePing, Controls.sb_t_ping.Value or 0), "accent")
         end
     else
-        stPing:SetValue("unavailable", "muted")
+        St.Ping:SetValue("unavailable", "muted")
     end
-    stAtmos:SetValue(tostring(Status.atmos or 0))
+    St.Atmos:SetValue(tostring(Status.atmos or 0))
 end
 
 -- LOGIC
@@ -1746,10 +1794,6 @@ end
 do
     local RITUAL_HOLD = 0.05
 
-    local function dbg(msg)
-        if Get("ritual_debug") then Log("Ritual: " .. msg) end
-    end
-
     -- Which ritual number each key is bound to (swap the numbers if the game rejects the inputs)
     local KEY_TO_INDEX = { Z = 1, X = 2, C = 3, V = 4 }
     local KEYCODES = { Z = 0x5A, X = 0x58, C = 0x43, V = 0x56 }
@@ -1816,22 +1860,18 @@ do
 
     local remoteBroken = false
     local function sendRitualInput(letter)
-        if not remoteBroken and not Get("ritual_keys_only") and KEY_TO_INDEX[letter] then
+        if not remoteBroken and KEY_TO_INDEX[letter] then
             local r = getRitualRemote()
             if r then
                 local ok, err = pcall(function() r:FireServer(KEY_TO_INDEX[letter]) end)
                 if ok then
-                    dbg("remote " .. letter)
                     return
                 end
-                dbg("remote failed (" .. tostring(err) .. "), switching to key presses")
             else
-                dbg("remote not found, switching to key presses")
             end
             remoteBroken = true
         end
         local vk = KEYCODES[letter] or string.byte(letter)
-        dbg("key " .. letter)
         pcall(keypress, vk)
         task.wait(RITUAL_HOLD)
         pcall(keyrelease, vk)
@@ -1845,12 +1885,9 @@ do
         if count == 0 then return nil end
         if sig == lastSig then return lastSig end
         if #seq == 0 then
-            dbg(string.format("saw %d symbol(s) but no usable keys, labels: [%s]", count, table.concat(raw, ",")))
             return sig
         end
 
-        dbg(string.format("detected %d symbol(s): %s", #seq, table.concat(seq, " ")))
-        task.wait((Get("ritual_delay") or 300) / 1000)
         if not Get("auto_ritual") then return sig end
 
         local seq2, id2, _, _, sig2 = readRitual(symbols)
@@ -1864,13 +1901,11 @@ do
             if i > 1 then
                 local _, curId = readRitual(sym)
                 if curId ~= id2 then
-                    dbg("ritual changed while typing, stopping")
                     return nil
                 end
             end
 
             sendRitualInput(letter)
-            task.wait((Get("ritual_gap") or 120) / 1000)
         end
         return sig2
     end
@@ -1946,238 +1981,119 @@ Nexa:Notify({
 })
 
 -- VISUALS LOGIC: NO FOG
-local ATMOS_DENSITY_OFF = 0xE8
-local ATMOS_PROPS = {}
-pcall(function()
-    local a = offsets.Atmosphere
-    if type(a) == "table" and type(a.Density) == "number" then ATMOS_DENSITY_OFF = a.Density end
-    ATMOS_PROPS[#ATMOS_PROPS + 1] = { name = "Density", off = ATMOS_DENSITY_OFF }
-end)
-if #ATMOS_PROPS == 0 then ATMOS_PROPS[1] = { name = "Density", off = ATMOS_DENSITY_OFF } end
+-- Uses the FogEnd and Atmosphere.Density offsets from Offsets.json.
+local FOG_TARGET = 1000000
+local fogAddress = nil
+local densityOffset = nil
+local fogConnection = nil
+local atmosphereConnection = nil
 
-local function PropOn(name)
-    return Get("no_fog") and true or false
-end
-
-local FOG_END_OFF
-pcall(function()
-    local l = offsets.Lighting
-    if type(l) == "table" and type(l.FogEnd) == "number" then FOG_END_OFF = l.FogEnd end
-end)
-local FogEndOriginal
-
-local AtmosOriginal = {}
-local AtmosFast, AtmosDeep = {}, {}
-local nextFastScan, nextDeepScan = 0, 0
-
-local function ParentOf(i) return i.Parent end
-local function AddressOf(i) return i.Address end
-local function ClassOf(i) return i.ClassName end
-local function DescendantsOf(i) return i:GetDescendants() end
-local function ChildrenOf(i) return i:GetChildren() end
-
-local function CollectAtmospheres(root, deep, out, seen)
-    if not root then return end
-    local ok, list = pcall(deep and DescendantsOf or ChildrenOf, root)
-    if not ok or type(list) ~= "table" then return end
-    for _, inst in ipairs(list) do
-        local okC, cls = pcall(ClassOf, inst)
-        if okC and cls == "Atmosphere" then
-            local okA, addr = pcall(AddressOf, inst)
-            if okA and addr and not seen[addr] then
-                seen[addr] = true
-                out[#out + 1] = inst
-            end
-        end
-    end
-end
-
-local function FixAtmosphere(inst)
-    local okP, parent = pcall(ParentOf, inst)
-    if not okP or not parent then return false end
-    local okA, addr = pcall(AddressOf, inst)
-    if not okA or not addr then return false end
-    for _, prop in ipairs(ATMOS_PROPS) do
-      if PropOn(prop.name) then
-        local target = addr + prop.off
-        local ok, cur = pcall(memory_read, "float", target)
-        if ok and type(cur) == "number" and cur ~= 0 then
-            local saved = AtmosOriginal[inst]
-            if not saved then saved = {} AtmosOriginal[inst] = saved end
-            if saved[prop.name] == nil then saved[prop.name] = cur end
-            pcall(memory_write, "float", target, 0)
-        end
-      end
-    end
-    return true
-end
-
-local LightingAddr
-local function ClearLegacyFog()
-    if not LightingAddr then
-        local ok, addr = pcall(function() return game:GetService("Lighting").Address end)
-        if not ok or not addr then return end
-        LightingAddr = addr
-    end
-    local target = LightingAddr + FOG_END_OFF
-    local ok2, cur = pcall(memory_read, "float", target)
-    if ok2 and type(cur) == "number" and cur > 0 and cur < 100000 then
-        if FogEndOriginal == nil then FogEndOriginal = cur end
-        pcall(memory_write, "float", target, 100000)
-    end
-end
-
-local function SampleFog()
-    if not FOG_END_OFF then
-        Nexa:Notify({ Title = "Fog", Content = "No FogEnd offset in the offsets list.", Type = "error", Duration = 3 })
-        return
-    end
-    local toggleOn = Get("no_legacy_fog") and true or false
-    local okA, addr = pcall(function() return game:GetService("Lighting").Address end)
-    if not okA or not addr then return end
-
-    local startOff
-    pcall(function()
-        if type(offsets.Lighting.FogStart) == "number" then startOff = offsets.Lighting.FogStart end
+local function InitNoFogOffsets()
+    local ok, data = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet("https://offsets.imtheo.lol/Offsets.json"))
     end)
+    if not ok or type(data) ~= "table" then
+        error("Could not download or decode Offsets.json")
+    end
 
-    local frames, changes, lastEnd, below = 0, 0, nil, 0
-    local minEnd, maxEnd = math.huge, -math.huge
-    local firstEnd, lastSeenEnd, startVal
-    local t0 = os.clock()
-    while os.clock() - t0 < 4 and Nexa:IsAlive() do
-        task.wait()
-        local ok, cur = pcall(memory_read, "float", addr + FOG_END_OFF)
-        if ok and type(cur) == "number" then
-            frames = frames + 1
-            if firstEnd == nil then firstEnd = cur end
-            if lastEnd ~= nil and math.abs(cur - lastEnd) > 0.01 then changes = changes + 1 end
-            if cur < 100000 then below = below + 1 end
-            lastEnd, lastSeenEnd = cur, cur
-            if cur < minEnd then minEnd = cur end
-            if cur > maxEnd then maxEnd = cur end
+    local currentOffsets = data.Offsets or data
+    local lightingOffsets = currentOffsets.Lighting
+    if type(lightingOffsets) ~= "table" then error("Lighting offsets missing") end
+
+    local fogOffset = lightingOffsets.FogEnd
+    if type(fogOffset) ~= "number" then error("FogEnd offset missing or not numeric") end
+
+    local lightingAddress = Lighting.Address
+    if type(lightingAddress) ~= "number" then error("Lighting.Address unavailable") end
+    fogAddress = lightingAddress + fogOffset
+
+    local atmosphereOffsets = currentOffsets.Atmosphere
+    densityOffset = type(atmosphereOffsets) == "table" and atmosphereOffsets.Density
+    if type(densityOffset) ~= "number" then
+        densityOffset = 0xC0
+        Log("Atmosphere.Density offset missing; using fallback 0xC0")
+    end
+
+    Log("Lighting address: " .. string.format("0x%X", lightingAddress))
+    Log("Fog address: " .. string.format("0x%X", fogAddress))
+    Log("Atmosphere density offset: " .. string.format("0x%X", densityOffset))
+end
+
+local function writeFog()
+    if not fogAddress then return end
+    local success, err = pcall(function()
+        memory_write("float", fogAddress, FOG_TARGET)
+    end)
+    if not success then warn("[Deepwoken] No Fog write failed: " .. tostring(err)) end
+end
+
+local function fixAtmosphere(instance)
+    local okClass, className = pcall(function() return instance.ClassName end)
+    if not okClass or className ~= "Atmosphere" then return end
+
+    local okAddress, address = pcall(function() return instance.Address end)
+    if not okAddress or type(address) ~= "number" then return end
+
+    local densityAddress = address + densityOffset
+    pcall(function()
+        local currentDensity = memory_read("float", densityAddress)
+        if type(currentDensity) == "number" and currentDensity ~= 0 then
+            memory_write("float", densityAddress, 0)
         end
-    end
-    if startOff then
-        local ok, v = pcall(memory_read, "float", addr + startOff)
-        if ok then startVal = v end
-    end
-
-    local msg = string.format("[toggle %s] FogEnd: %d reads, changed %d times, below100k %d. first %.0f, last %.0f, min %.0f, max %.0f%s",
-        toggleOn and "ON" or "OFF", frames, changes, below, firstEnd or 0, lastSeenEnd or 0,
-        minEnd == math.huge and 0 or minEnd, maxEnd == -math.huge and 0 or maxEnd,
-        startVal and string.format(", FogStart %.0f", startVal) or "")
-    print("[Deepwoken] " .. msg)
-    Nexa:Notify({ Title = "Fog sample", Content = msg, Type = "success", Duration = 8 })
+    end)
 end
 
-actionSec:AddButton({
-    Title = "Sample Fog",
-    ButtonText = "Sample Fog (4s)",
-    Callback = function() task.spawn(SampleFog) end,
-})
-
-actionSec:AddButton({
-    Title = "",
-    ButtonText = "Unload Script",
-    Variant = "danger",
-    Expand = true,
-    Callback = function()
-        task.spawn(function()
-            pcall(function() Nexa:Destroy() end)
-            pcall(function()
-                local env = type(getgenv) == "function" and getgenv() or nil
-                for _, k in ipairs({ "Nexa", "UI", "DrawingUI" }) do
-                    if env and env[k] == Nexa then env[k] = nil end
-                    if rawget(_G, k) == Nexa then _G[k] = nil end
-                    if type(shared) == "table" and shared[k] == Nexa then shared[k] = nil end
-                end
-            end)
-        end)
-    end,
-})
-
-local function RestoreLegacyFog()
-    if FogEndOriginal and LightingAddr and FOG_END_OFF then
-        pcall(memory_write, "float", LightingAddr + FOG_END_OFF, FogEndOriginal)
+local function writeAtmosphereDensity()
+    local ok, descendants = pcall(function() return Lighting:GetDescendants() end)
+    if not ok or not descendants then return end
+    for _, instance in ipairs(descendants) do
+        fixAtmosphere(instance)
     end
-    FogEndOriginal = nil
 end
 
-local function ApplyNoFog(now)
-    if now >= nextFastScan then
-        nextFastScan = now + 0.5
-        local out, seen = {}, {}
-        CollectAtmospheres(game:GetService("Lighting"), true, out, seen)
-        CollectAtmospheres(workspace.CurrentCamera, true, out, seen)
-        AtmosFast = out
-    end
-
-    local count = 0
-    for _, inst in ipairs(AtmosFast) do
-        if FixAtmosphere(inst) then count = count + 1 end
-    end
-    for _, inst in ipairs(AtmosDeep) do
-        if FixAtmosphere(inst) then count = count + 1 end
-    end
-    Status.atmos = count
+local function RestoreFogEnd()
+    if fogConnection then pcall(function() fogConnection:Disconnect() end) fogConnection = nil end
+    if atmosphereConnection then pcall(function() atmosphereConnection:Disconnect() end) atmosphereConnection = nil end
 end
 
-local function RestoreAtmosphere(onlyInactive)
-    for inst, saved in pairs(AtmosOriginal) do
-        pcall(function()
-            local alive = inst.Parent ~= nil
-            local addr = alive and inst.Address
-            for _, prop in ipairs(ATMOS_PROPS) do
-                local original = saved[prop.name]
-                if original ~= nil and (not onlyInactive or not PropOn(prop.name)) then
-                    if alive then memory_write("float", addr + prop.off, original) end
-                    saved[prop.name] = nil
-                end
-            end
-        end)
-    end
-    if onlyInactive then return end
-    AtmosOriginal = {}
-    AtmosFast, AtmosDeep = {}, {}
-    nextFastScan, nextDeepScan = 0, 0
+local function RestoreAtmosphere()
+    -- The requested implementation continuously writes values and does not save originals.
+    -- Turning the toggle off stops the RenderStepped writers.
+    RestoreFogEnd()
 end
-
-task.spawn(function()
-    local wasOn, lastState = false, ""
-    local cFog = Controls.no_fog
-    while Nexa:IsAlive() do
-        local fog = cFog.Value and true or false
-        local state = fog and "1" or "0"
-        if fog then
-            if state ~= lastState then pcall(RestoreAtmosphere, true) end
-            pcall(ApplyNoFog, os.clock())
-            task.wait()
-        else
-            if wasOn then pcall(RestoreAtmosphere) end
-            task.wait(0.25) -- idle: only check the toggle a few times a second
-        end
-        wasOn, lastState = fog, state
-    end
-end)
 
 task.spawn(function()
     local wasOn = false
-    local cLegacy = Controls.no_legacy_fog
+    local cFog = Controls.no_fog
     while Nexa:IsAlive() do
-        if FOG_END_OFF and cLegacy.Value then
-            ClearLegacyFog()
-            wasOn = true
-            task.wait()
+        if cFog and cFog.Value then
+            if not wasOn then
+                wasOn = true
+                local ok, err = pcall(InitNoFogOffsets)
+                if not ok then
+                    warn("[Deepwoken] No Fog error: " .. tostring(err))
+                elseif type(memory_write) ~= "function" then
+                    warn("[Deepwoken] No Fog error: memory_write is unavailable")
+                elseif type(memory_read) ~= "function" then
+                    warn("[Deepwoken] No Fog error: memory_read is unavailable")
+                else
+                    writeFog()
+                    writeAtmosphereDensity()
+                    fogConnection = RunService.RenderStepped:Connect(writeFog)
+                    atmosphereConnection = RunService.RenderStepped:Connect(writeAtmosphereDensity)
+                    Log("Fog loop and Atmosphere density suppression started")
+                end
+            end
+            task.wait(0.1)
         else
             if wasOn then
-                RestoreLegacyFog()
                 wasOn = false
+                RestoreFogEnd()
             end
             task.wait(0.25)
         end
     end
-    RestoreLegacyFog()
+    RestoreFogEnd()
 end)
 
 -- MISC LOGIC: REMOVE WINDS
@@ -2238,95 +2154,674 @@ do
     end)
 end
 
--- MISC LOGIC: FPS BOOST
--- Removes the sea / water parts. One-shot when the toggle is switched on; the water tags are then
--- kept clear while the toggle stays on. Every step is pcall'd on its own so one missing object
--- (e.g. SeaAttach already gone) doesn't stop the rest.
+-- QOL LOGIC: AUTO INTELLIGENCE / CHARISMA
+-- Answers the "ChoicePrompt" GUI. This is a polling rewrite of the original ChildAdded handler, since the
+-- rest of this script doesn't use signals. Wrapped in do...end to keep top-level locals down.
 do
-    local function Step(name, fn)
-        local ok, err = pcall(fn)
-        if not ok then Log("FPS Boost: " .. name .. " failed: " .. tostring(err)) end
-        return ok
+    local INTEL_DELAY    = 1.0 -- wait before answering a math question
+    local CHARISMA_DELAY = 0.5 -- wait before sending the chat line
+    local POLL_INTERVAL  = 0.25
+
+    local lastHandled = nil    -- signature of the prompt we already answered
+    local warnedRemote = false
+
+    local function warnRemote(err)
+        if warnedRemote then return end
+        warnedRemote = true
+        Log("Stat Farm: remote call failed: " .. tostring(err))
+        Nexa:Notify({ Title = "Stat Farm", Content = "Your executor can't fire remotes (see console).", Type = "error", Duration = 5 })
     end
 
-    local function GraphicsMode()
-        local rs = game:GetService("ReplicatedStorage")
-        for _, inst in ipairs({ Players.LocalPlayer, rs, workspace }) do
-            local ok, v = pcall(function() return inst:GetAttribute("GraphicsMode") end)
-            if ok and v then return v end
+    -- Returns the ChoicePrompt and its ChoiceFrame, or nil if no prompt is open.
+    local function getPrompt()
+        local lp = Players.LocalPlayer
+        local gui = lp and lp:FindFirstChild("PlayerGui")
+        local prompt = gui and gui:FindFirstChild("ChoicePrompt")
+        local frame = prompt and prompt:FindFirstChild("ChoiceFrame")
+        if not frame then return nil end
+        return prompt, frame
+    end
+
+    local function isButton(inst)
+        local ok, result = pcall(function() return inst:IsA("TextButton") end)
+        return not ok or result
+    end
+
+    -- Splits on newlines but keeps empty lines, so line numbers match the on-screen text.
+    local function splitLines(text)
+        local lines = {}
+        for line in (text .. "\n"):gmatch("(.-)\n") do
+            lines[#lines + 1] = line
+        end
+        return lines
+    end
+
+    -- INTELLIGENCE: "What is 12 plus 5?" -> 17
+    local NUMBER = "(%-?%d+%.?%d*)"
+    local OPERATIONS = {
+        { "plus",       function(a, b) return a + b end },
+        { "minus",      function(a, b) return a - b end },
+        { "times",      function(a, b) return a * b end },
+        { "divided by", function(a, b) return b ~= 0 and a / b or nil end },
+    }
+
+    local function solveQuestion(text)
+        text = string.lower(text)
+        for _, op in ipairs(OPERATIONS) do
+            local a, b = text:match(NUMBER .. "%s+" .. op[1] .. "%s+" .. NUMBER)
+            a, b = tonumber(a), tonumber(b)
+            if a and b then return op[2](a, b) end
         end
         return nil
     end
 
-    local function ClearWaterTags()
-        local cs = game:GetService("CollectionService")
-        for _, part in ipairs(cs:GetTagged("WaterPart")) do
-            cs:RemoveTag(part, "WaterPart")
+    -- Picks the option whose name (the number it stands for) is closest to the answer, within 1.
+    local function pickOption(optionsFolder, answer)
+        local best, bestDiff
+        for _, option in ipairs(optionsFolder:GetChildren()) do
+            local value = tonumber(option.Name)
+            if value and isButton(option) then
+                local diff = math.abs(value - answer)
+                if diff <= 1 and (not bestDiff or diff < bestDiff) then
+                    best, bestDiff = option, diff
+                end
+            end
         end
+        return best
     end
 
-    local function RunBoost()
-        local lp = Players.LocalPlayer
-        local rs = game:GetService("ReplicatedStorage")
-        local scripts = lp.PlayerScripts
-        local seaClient, actor
-
-        Step("SeaClient", function()
-            seaClient = scripts:FindFirstChild("SeaClient")
-                or game:GetService("StarterPlayer").StarterPlayerScripts.SeaClient:Clone()
-        end)
-        Step("Actor", function()
-            actor = Instance.new("Actor")
-            actor.Parent = scripts
-        end)
-        Step("SeaAttach", function() workspace.Terrain.SeaAttach:Destroy() end)
-
-        if GraphicsMode() == "low" then
-            Step("SkinnedSea (assets)", function()
-                local mesh = rs.Assets.SeaMesh
-                mesh.SkinnedSea:Destroy()
-                local far = mesh.FarSea:Clone()
-                far.Parent = mesh
-                far.Name = "SkinnedSea"
-            end)
-            Step("disable SeaClient", function() seaClient.Disabled = true end)
+    local function answerIntelligence(prompt, frame, descLabel)
+        local question = descLabel.Text
+        local answer = solveQuestion(question)
+        if not answer then
+            Log("Stat Farm: could not read the question: " .. tostring(question))
+            return
         end
 
-        Step("SkinnedSea (workspace)", function() workspace.SkinnedSea:Destroy() end)
+        task.wait(INTEL_DELAY)
+        if not getPrompt() then return end -- prompt closed while waiting
 
-        -- re-parent SeaClient under the Actor and bounce it so it restarts without the sea
-        task.wait(0.15)
-        Step("parent SeaClient", function() seaClient.Parent = actor end)
-        task.wait(0.15)
-        Step("enable", function() seaClient.Disabled = false end)
-        task.wait(0.15)
-        Step("disable", function() seaClient.Disabled = true end)
-        task.wait(0.15)
-        Step("enable", function() seaClient.Disabled = false end)
+        local options = frame:FindFirstChild("Options")
+        local choice = options and pickOption(options, answer)
+        if not choice then
+            Log("Stat Farm: no option within 1 of " .. tostring(answer))
+            return
+        end
 
-        Step("water tags", ClearWaterTags)
-        Log("FPS Boost applied")
-        Nexa:Notify({ Title = "FPS Boost", Content = "Sea and water removed.", Type = "success", Duration = 3 })
+        local remote = prompt:FindFirstChild("Choice")
+        if not remote then
+            Log("Stat Farm: Choice remote not found")
+            return
+        end
+
+        Log(string.format("Stat Farm: intelligence answer %s -> option %s", tostring(answer), choice.Name))
+        local ok, err = pcall(function() remote:FireServer(choice.Name) end)
+        if not ok then warnRemote(err) end
+    end
+
+    -- CHARISMA: the line to say is on the prompt's second line, wrapped in quotes.
+    local function answerCharisma(prompt, descLabel)
+        local line = splitLines(descLabel.Text)[2]
+        if not line or line == "" then
+            Log("Stat Farm: no charisma line found in the prompt text")
+            return
+        end
+        local reply = string.sub(line, 2, -2) -- strip the surrounding quotes
+
+        task.wait(CHARISMA_DELAY)
+        if not getPrompt() then return end
+
+        local chat = prompt:FindFirstChild("ChatChoice")
+        if not chat then
+            Log("Stat Farm: ChatChoice remote not found")
+            return
+        end
+
+        Log("Stat Farm: charisma reply -> " .. reply)
+        local ok, err = pcall(function() chat:InvokeServer(reply) end)
+        if not ok then warnRemote(err) end
+    end
+
+    local function StatFarmStep()
+        local prompt, frame = getPrompt()
+        if not prompt then
+            lastHandled = nil
+            return
+        end
+
+        local descSheet = frame:FindFirstChild("DescSheet")
+        local useIntel = descSheet ~= nil and Get("auto_intel")
+        local useCharisma = not useIntel and Get("auto_charisma")
+        if not useIntel and not useCharisma then return end
+
+        local descLabel = useIntel and descSheet:FindFirstChild("Desc") or frame:FindFirstChild("Desc")
+        if not descLabel or descLabel.Text == "" then return end -- text not loaded yet
+
+        local signature = tostring(prompt.Address) .. "|" .. descLabel.Text
+        if signature == lastHandled then return end
+        lastHandled = signature
+
+        if useIntel then
+            answerIntelligence(prompt, frame, descLabel)
+        else
+            answerCharisma(prompt, descLabel)
+        end
     end
 
     task.spawn(function()
-        local cBoost = Controls.fps_boost
-        local was = false
-        local lastTags = 0
         while Nexa:IsAlive() do
-            local on = cBoost.Value and true or false
-            if on and not was then
-                task.spawn(RunBoost)
+            if Get("auto_intel") or Get("auto_charisma") then
+                local ok, err = pcall(StatFarmStep)
+                if not ok then warn("[Deepwoken] stat farm error: " .. tostring(err)) end
+                task.wait(POLL_INTERVAL)
+            else
+                lastHandled = nil
+                task.wait(0.5) -- idle
             end
-            -- stand-in for the original "tag added" signal: keep removing new WaterPart tags
-            if on and os.clock() - lastTags >= 1 then
-                lastTags = os.clock()
-                pcall(ClearWaterTags)
-            end
-            was = on
-            task.wait(on and 0.5 or 0.5)
         end
     end)
+end
+
+-- MISC LOGIC: REMOVALS (No Shadows / No Golem Turrets / No Kill Bricks / No Rain Sound)
+-- Ported from the original features. Anything that needed Parent = nil, :Remove() or signals is done differently
+-- here because those don't work on this executor: obstacles are moved far below the map (and put back when the
+-- toggle is turned off) and signals are replaced by polling. Wrapped in do...end for the local limit.
+do
+    -- walk down a chain of child names, returning nil as soon as one is missing
+    local function find(root, ...)
+        local current = root
+        for _, name in ipairs({ ... }) do
+            current = current and current:FindFirstChild(name)
+            if not current then return nil end
+        end
+        return current
+    end
+
+    -- Remembers every part it moves out of the way so RestoreAll can put them back exactly.
+    local function NewMover()
+        local saved = {}
+        local self = {}
+
+        function self.Move(part)
+            if saved[part] ~= nil then return end
+            local ok = pcall(function()
+                local cf = part.CFrame
+                saved[part] = cf
+                part.CFrame = cf + Vector3.new(0, -10000, 0)
+            end)
+            if not ok then saved[part] = nil end
+        end
+
+        -- a part is moved directly; for a model every part inside it is moved
+        function self.MoveTree(inst)
+            local ok, isPart = pcall(function() return inst:IsA("BasePart") end)
+            if not ok or isPart then
+                self.Move(inst)
+                return
+            end
+            local okD, list = pcall(function() return inst:GetDescendants() end)
+            if okD and type(list) == "table" then
+                for _, d in ipairs(list) do
+                    local okP, p = pcall(function() return d:IsA("BasePart") end)
+                    if okP and p then self.Move(d) end
+                end
+            end
+        end
+
+        function self.RestoreAll()
+            for part, cf in pairs(saved) do
+                pcall(function() part.CFrame = cf end)
+            end
+            saved = {}
+        end
+
+        return self
+    end
+
+    -- Runs onTick while the toggle is on (every `interval` seconds, 0 = every frame) and onOff once when it
+    -- turns off or the script unloads. Only errors are printed.
+    local function Feature(flag, interval, onTick, onOff)
+        local ctrl = Controls[flag]
+        task.spawn(function()
+            local wasOn, lastErr = false, nil
+            while Nexa:IsAlive() do
+                if ctrl.Value then
+                    wasOn = true
+                    local ok, err = pcall(onTick)
+                    if not ok and err ~= lastErr then
+                        lastErr = err
+                        warn(string.format("[Deepwoken] %s error: %s", flag, tostring(err)))
+                    end
+                    if interval > 0 then task.wait(interval) else task.wait() end
+                else
+                    if wasOn then
+                        wasOn = false
+                        if onOff then pcall(onOff) end
+                    end
+                    task.wait(0.25)
+                end
+            end
+        end)
+        if onOff then Nexa:OnDestroy(function() pcall(onOff) end) end
+    end
+
+    -- NO SHADOWS: the GlobalShadows byte on Lighting is set to 0 (offset from the offsets list when it has
+    -- one, otherwise 0x134). The original value is read first and put back when the toggle is turned off.
+    local SHADOWS_OFF = 0x134
+    pcall(function()
+        local l = offsets.Lighting
+        if type(l) == "table" and type(l.GlobalShadows) == "number" then SHADOWS_OFF = l.GlobalShadows end
+    end)
+    local shadowOriginal = nil
+    Feature("no_shadows", 0.5, function()
+        local addr = LightingAddress() + SHADOWS_OFF
+        if shadowOriginal == nil then
+            local ok, v = pcall(memory_read, "byte", addr)
+            shadowOriginal = (ok and type(v) == "number") and v or 1
+        end
+        memory_write("byte", addr, 0)
+    end, function()
+        if shadowOriginal ~= nil then
+            local value = shadowOriginal
+            shadowOriginal = nil
+            pcall(function() memory_write("byte", LightingAddress() + SHADOWS_OFF, value) end)
+        end
+    end)
+
+    -- NO GOLEM TURRETS: move the TurretTrigger parts out of reach.
+    local turretMover = NewMover()
+    Feature("no_golem_turrets", 1, function()
+        local thrown = workspace:FindFirstChild("Thrown")
+        if not thrown then return end
+        for _, child in ipairs(thrown:GetChildren()) do
+            if child.Name == "TurretTrigger" then turretMover.MoveTree(child) end
+        end
+    end, function()
+        turretMover.RestoreAll()
+    end)
+
+    -- NO KILL BRICKS: move kill bricks and the Layer 2 kill brick model out of reach.
+    -- (The SuperWall handling from the original is already covered by Remove Winds.)
+    local KILL_NAMES = { KillBrick = true, KillPlane = true, LifeField = true, ChasmBrick = true }
+    local killMover = NewMover()
+    Feature("no_kill_bricks", 2, function()
+        for _, child in ipairs(workspace:GetChildren()) do
+            if KILL_NAMES[child.Name] then killMover.MoveTree(child) end
+        end
+        local model = find(workspace, "Layer2Floor1", "Layer2KillbrickModel")
+        if model then
+            for _, part in ipairs(model:GetChildren()) do killMover.MoveTree(part) end
+        end
+    end, function()
+        killMover.RestoreAll()
+    end)
+
+    -- NO RAIN SOUND: keep the rain sound's playback speed at 0 (it is re-resolved once a second).
+    local rain, rainCheckedAt = nil, 0
+    Feature("no_rain_sound", 0, function()
+        local now = os.clock()
+        if not rain or now >= rainCheckedAt then
+            rainCheckedAt = now + 1
+            rain = find(Players.LocalPlayer, "PlayerGui", "WorldClient", "Weather", "Rain")
+        end
+        if rain and not pcall(function() rain.PlaybackSpeed = 0 end) then rain = nil end
+    end)
+end
+
+-- QOL LOGIC: TP TO OBJECTIVES
+-- Port of the Layer 2 objective helper. While the toggle is on it repeatedly does the next step: door key and
+-- door, Galewax, blood jars (chaser), buzz obelisks, bone spears and altars. The original's tween library is
+-- replaced by flying your root part toward the target at 200 studs/s (CFrame writes, like Reset uses), and its
+-- signals / library helpers are replaced by plain lookups. Wrapped in do...end for the local limit.
+do
+    local SPEED = 200
+    local warnedPrompt = false
+
+    local function enabled()
+        return Nexa:IsAlive() and Controls.tp_objectives.Value
+    end
+
+    local function localRoot()
+        local lp = Players.LocalPlayer
+        local char = lp and lp.Character
+        return char, char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- FindFirstChild(name, true), with a descendants scan as fallback if the recursive flag isn't supported
+    local function findDeep(inst, name)
+        local ok, result = pcall(function() return inst:FindFirstChild(name, true) end)
+        if ok then return result end
+        local okD, list = pcall(function() return inst:GetDescendants() end)
+        if okD and type(list) == "table" then
+            for _, d in ipairs(list) do
+                if d.Name == name then return d end
+            end
+        end
+        return nil
+    end
+
+    -- world position of a part, model or ObjectValue target
+    local function getPosition(inst)
+        if not inst then return nil end
+        local ok, isPart = pcall(function() return inst:IsA("BasePart") end)
+        if ok and isPart then return inst.Position end
+
+        local okM, isModel = pcall(function() return inst:IsA("Model") end)
+        if okM and isModel then
+            local okP, pivot = pcall(function() return inst:GetPivot() end)
+            if okP and pivot then return pivot.Position end
+            if inst.PrimaryPart then return inst.PrimaryPart.Position end
+            local okD, list = pcall(function() return inst:GetDescendants() end)
+            if okD and type(list) == "table" then
+                for _, d in ipairs(list) do
+                    local okB, isBase = pcall(function() return d:IsA("BasePart") end)
+                    if okB and isBase then return d.Position end
+                end
+            end
+            return nil
+        end
+
+        local okO, isObj = pcall(function() return inst:IsA("ObjectValue") end)
+        if okO and isObj and inst.Value then return getPosition(inst.Value) end
+        return nil
+    end
+
+    local function getNearest(list, filter)
+        local _, root = localRoot()
+        if not root then return nil end
+        local rootPos = root.Position
+        local best, bestDist = nil, 9e9
+        for _, v in ipairs(list) do
+            local pos = getPosition(v)
+            if pos and filter(v) then
+                local d = (pos - rootPos).Magnitude
+                if d < bestDist then best, bestDist = v, d end
+            end
+        end
+        return best
+    end
+
+    -- fly the root part to `target` at SPEED studs/s; returns false if interrupted
+    local function moveTo(target)
+        if not target then return false end
+        local last = os.clock()
+        while enabled() do
+            local _, root = localRoot()
+            if not root then return false end
+            local diff = target - root.Position
+            local dist = diff.Magnitude
+            if dist < 1 then return true end
+
+            local now = os.clock()
+            local step = SPEED * math.min(now - last, 0.1)
+            last = now
+            local delta = (dist <= step) and diff or diff * (step / dist)
+            root.CFrame = root.CFrame + delta
+            task.wait()
+        end
+        return false
+    end
+
+    local function firePrompt(prompt)
+        if not prompt then return end
+        if type(fireproximityprompt) ~= "function" then
+            if not warnedPrompt then
+                warnedPrompt = true
+                Log("TP to Objectives: this executor has no fireproximityprompt, prompts can't be triggered")
+                Nexa:Notify({ Title = "TP to Objectives", Content = "No fireproximityprompt here, so prompts won't be triggered.", Type = "warning", Duration = 5 })
+            end
+            return
+        end
+        pcall(fireproximityprompt, prompt)
+    end
+
+    -- keeps firing the dialogue exit remote for 2 seconds (closes the prompt window)
+    local function closePrompt()
+        local rs = game:GetService("ReplicatedStorage")
+        local requests = rs:FindFirstChild("Requests")
+        local send = requests and requests:FindFirstChild("SendDialogue")
+        if not send then return end
+        local start = os.clock()
+        while os.clock() - start < 2 do
+            pcall(function() send:FireServer({ exit = true }) end)
+            task.wait()
+        end
+    end
+
+    local function pingWait()
+        task.wait(((GetPingValue() or 0) / 1000) * 2 + 0.05)
+    end
+
+    local function hasName(list, name)
+        for _, v in ipairs(list) do
+            if v.Name == name then return true end
+        end
+        return false
+    end
+
+    -- altars on one floor that don't hold a BoneSpear yet
+    local function pendingAltars(folder, modelsOnly)
+        local pending = {}
+        if not folder then return pending end
+        for _, altar in ipairs(folder:GetChildren()) do
+            local isAltar = altar.Name:match("Altar") ~= nil
+            if isAltar and modelsOnly then
+                local ok, isModel = pcall(function() return altar:IsA("Model") end)
+                isAltar = ok and isModel
+            end
+            if isAltar and not findDeep(altar, "BoneSpear") then
+                pending[#pending + 1] = altar
+            end
+        end
+        return pending
+    end
+
+    local function ObjectiveStep()
+        local live = workspace:FindFirstChild("Live")
+        local ingredients = workspace:FindFirstChild("Ingredients")
+        local npcs = workspace:FindFirstChild("NPCs")
+        local floor1 = workspace:FindFirstChild("Layer2Floor1")
+        local doorKey = floor1 and floor1:FindFirstChild("DoorKey")
+        local door = npcs and npcs:FindFirstChild("TheDoor")
+        local key = npcs and npcs:FindFirstChild("TheKey")
+        local doorPrompt = door and door:FindFirstChild("InteractPrompt")
+        local keyPrompt = key and key:FindFirstChild("InteractPrompt")
+        local collection = game:GetService("CollectionService")
+
+        local hasChaser = false
+        if live then
+            for _, entity in ipairs(live:GetChildren()) do
+                if entity.Name:match(".chaser") then
+                    hasChaser = true
+                    break
+                end
+            end
+        end
+
+        -- door and key
+        if doorPrompt and keyPrompt and doorKey then
+            moveTo(getPosition(doorKey))
+            if not enabled() then return end
+            pingWait()
+
+            if keyPrompt.Parent then
+                firePrompt(keyPrompt)
+                task.spawn(closePrompt)
+            end
+
+            moveTo(getPosition(door))
+            if not enabled() then return end
+            pingWait()
+
+            if doorPrompt.Parent then
+                firePrompt(doorPrompt)
+                task.spawn(closePrompt)
+            end
+        end
+
+        -- Galewax
+        if floor1 and not hasChaser and not keyPrompt and ingredients then
+            local galewax = getNearest(ingredients:GetChildren(), function(v) return v.Name == "Galewax" end)
+            if galewax then moveTo(getPosition(galewax)) end
+            if not enabled() then return end
+        end
+
+        -- blood jars while a chaser is around
+        if hasChaser then
+            local jar = getNearest(collection:GetTagged("BloodJar"), function(v) return findDeep(v, "JarLight") ~= nil end)
+            if jar then moveTo(getPosition(jar)) end
+            if not enabled() then return end
+        end
+
+        -- buzz obelisks / bone spears / altars
+        local char = localRoot()
+        local obelisks = collection:GetTagged("BuzzObelisk")
+        if #obelisks > 0 then
+            local obelisk = getNearest(obelisks, function(v) return v.Name:match("BuzzPart") ~= nil end)
+            if obelisk then
+                moveTo(getPosition(obelisk))
+                if not enabled() then return end
+                local prompt = obelisk:FindFirstChild("InteractPrompt")
+                firePrompt(prompt)
+            end
+
+        elseif char and not char:FindFirstChild("BoneSpear") and workspace:FindFirstChild("Layer2Floor2") then
+            local thrown = workspace:FindFirstChild("Thrown")
+            local candidates = {}
+            if thrown then
+                for _, object in ipairs(thrown:GetChildren()) do
+                    if object.Name:match("BoneSpear") and object:FindFirstChild("InteractPrompt") then
+                        candidates[#candidates + 1] = object
+                    end
+                end
+            end
+            local spear = getNearest(candidates, function() return true end)
+            if spear then
+                moveTo(getPosition(spear))
+                if not enabled() then return end
+                task.wait(0.2)
+                firePrompt(spear:FindFirstChild("InteractPrompt"))
+            end
+
+        elseif char and char:FindFirstChild("BoneSpear") and workspace:FindFirstChild("Layer2Floor2") then
+            local room = workspace:FindFirstChild("TrueAvatarBossRoom")
+            if not room then return end
+
+            -- floors are done in order: the first floor that still has an empty altar is the target
+            local pending = pendingAltars(room:FindFirstChild("Floor1Stuff"), true)
+            if #pending == 0 then pending = pendingAltars(room:FindFirstChild("Floor2Stuff"), true) end
+            if #pending == 0 then pending = pendingAltars(room:FindFirstChild("Floor3Stuff"), false) end
+
+            local altar = getNearest(pending, function() return true end)
+            if not altar or altar:FindFirstChild("BoneSpear") then return end
+
+            local center = altar:FindFirstChild("Center")
+            moveTo(getPosition(center) or getPosition(altar))
+        end
+    end
+
+    task.spawn(function()
+        local lastErr = nil
+        while Nexa:IsAlive() do
+            if Controls.tp_objectives.Value then
+                local ok, err = pcall(ObjectiveStep)
+                if not ok and err ~= lastErr then
+                    lastErr = err
+                    warn("[Deepwoken] TP to Objectives error: " .. tostring(err))
+                end
+                task.wait(0.2)
+            else
+                task.wait(0.25)
+            end
+        end
+    end)
+end
+
+-- QOL LOGIC: KNOCK SELF / RESET
+-- Ports of the knockSelf and instaReset features. Each step that needs something this executor
+-- may not have (remotes, the cheat's KeyHandler, property writes) is wrapped, and failures are reported
+-- instead of silently doing nothing. Wrapped in do...end for the local limit.
+do
+    -- walk down a chain of child names, returning nil as soon as one is missing
+    local function child(root, ...)
+        local current = root
+        for _, name in ipairs({ ... }) do
+            current = current and current:FindFirstChild(name)
+            if not current then return nil end
+        end
+        return current
+    end
+
+    local function localParts()
+        local lp = Players.LocalPlayer
+        local char = lp and lp.Character
+        return char and char:FindFirstChild("Humanoid"), char and char:FindFirstChild("HumanoidRootPart")
+    end
+
+    -- KNOCK SELF: take acid damage until under 45 health, then three fall-damage hits
+    local knockBusy = false
+    QolActions.KnockSelf = function()
+        if knockBusy then return end
+        knockBusy = true
+        task.spawn(function()
+            local ok, err = pcall(function()
+                local humanoid = localParts()
+                if not humanoid then error("no Humanoid found") end
+
+                local env = type(getgenv) == "function" and getgenv() or nil
+                local keyHandler = (env and env.KeyHandler) or KeyHandler
+                if not keyHandler then
+                    -- fall back to the game's own module: ReplicatedStorage.Modules.ClientManager.KeyHandler
+                    local module = child(game:GetService("ReplicatedStorage"), "Modules", "ClientManager", "KeyHandler")
+                    local req = (env and env.require) or require
+                    if module and type(req) == "function" then
+                        local okReq, result = pcall(req, module)
+                        if okReq then keyHandler = result end
+                    end
+                end
+                if not keyHandler then
+                    error("KeyHandler isn't available (no global, and the game module can't be required here)")
+                end
+                if type(keyHandler) ~= "table" or type(keyHandler.get_key) ~= "function" then
+                    error("the KeyHandler module doesn't expose get_key, so the FallDamage remote can't be found")
+                end
+
+                if humanoid.Health > 45 then
+                    local acid = child(game:GetService("ReplicatedStorage"), "Requests", "AcidCheck")
+                    if not acid then error("Requests.AcidCheck not found") end
+                    local startedAt = os.clock()
+                    repeat
+                        acid:FireServer()
+                        task.wait(0.025)
+                    until humanoid.Health < 45 or os.clock() - startedAt > 10 -- the original had no time limit
+                end
+
+                for hit = 1, 3 do
+                    keyHandler:get_key("FallDamage"):FireServer(20 + math.random(), false)
+                    if hit < 3 then task.wait(0.25) end
+                end
+            end)
+
+            if not ok then
+                Log("Knock Self failed: " .. tostring(err))
+                Nexa:Notify({ Title = "Knock Self", Content = "Failed: " .. tostring(err), Type = "error", Duration = 5 })
+            end
+            knockBusy = false
+        end)
+    end
+
+    -- RESET: throw the root part far out of the map
+    QolActions.Reset = function()
+        local ok, err = pcall(function()
+            local _, root = localParts()
+            if not root then error("no HumanoidRootPart found") end
+            root.CFrame = root.CFrame + Vector3.new(0, 9000000000, 0)
+        end)
+        if not ok then
+            Log("Reset failed: " .. tostring(err))
+            Nexa:Notify({ Title = "Reset", Content = "Failed: " .. tostring(err), Type = "error", Duration = 4 })
+        end
+    end
 end
 
 task.spawn(function()
@@ -2336,7 +2831,7 @@ end)
 
 Nexa:OnDestroy(function()
     pcall(RestoreAtmosphere)
-    pcall(RestoreLegacyFog)
+    pcall(RestoreFogEnd)
     for _, r in ipairs(Releases) do pcall(keyrelease, r.vk) end
     Releases = {}
     Queue, Active, Tracked, TrackedCount = {}, {}, {}, 0
