@@ -86,6 +86,17 @@ local function getNexa()
         warn("[Deepwoken] Nexa island visibility patch point not found; floating UI may remain visible.")
     end
 
+    -- Notifications were drawn with the window's fade alpha, which is 0 while the menu is closed:
+    -- the box and text vanished and only the (image) logo stayed visible. Draw them at full alpha.
+    local patchedSource, notifPatches = string.gsub(source, "\n([ \t]*)DrawNotifications%(%)", function(indent)
+        return "\n" .. indent .. "do local __pa = FrameAlpha FrameAlpha = 1 DrawNotifications() FrameAlpha = __pa end"
+    end)
+    if notifPatches > 0 then
+        source = patchedSource
+    else
+        warn("[Deepwoken] Nexa notification patch point not found; notifications may only show the logo while the menu is closed.")
+    end
+
     local chunk, compileError = loadstring(source)
     if not chunk then error("[Deepwoken] Nexa failed to compile: " .. tostring(compileError)) end
 
@@ -329,23 +340,116 @@ local function HttpGet(url)
 end
 
 -- PING
-local function GetPingMs()
-    local ok, v = pcall(function()
+-- Matcha provides its own global GetPingValue(). Grab it here, BEFORE the local GetPingValue below is
+-- declared, otherwise the local shadows it and the native function is never called.
+local NativeGetPingValue = GetPingValue
+if type(NativeGetPingValue) ~= "function" and type(getgenv) == "function" then
+    local ok, fn = pcall(function() return getgenv().GetPingValue end)
+    if ok and type(fn) == "function" then NativeGetPingValue = fn end
+end
+if type(NativeGetPingValue) ~= "function" then NativeGetPingValue = nil end
+
+local PingMethod = "none"
+local PingError = nil
+
+local function ValidPing(v)
+    return type(v) == "number" and v == v and v > 0 and v < 10000
+end
+
+-- tried in order until one returns a usable number (executors differ in what they expose)
+local PING_METHODS = {
+    { "native GetPingValue", function()
+        if not NativeGetPingValue then error("no native GetPingValue global") end
+        return NativeGetPingValue()
+    end },
+    { "Data Ping", function()
         return game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()
-    end)
-    if ok and type(v) == "number" and v > 0 then return v end
-
-    ok, v = pcall(function()
+    end },
+    { "Data Ping (string)", function()
+        local s = game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValueString()
+        return tonumber(tostring(s):match("[%d%.]+"))
+    end },
+    { "PerformanceStats.Ping", function()
+        return game:GetService("Stats").PerformanceStats.Ping:GetValue()
+    end },
+    -- Matcha-style access: FindFirstChild + property read instead of method calls
+    { "FindFirstChild .Value", function()
+        local stats = game:GetService("Stats")
+        local net = stats:FindFirstChild("Network")
+        local sItem = net and net:FindFirstChild("ServerStatsItem")
+        local item = sItem and sItem:FindFirstChild("Data Ping")
+        return item and item.Value
+    end },
+    { "FindFirstChild GetValue", function()
+        local stats = game:GetService("Stats")
+        local net = stats:FindFirstChild("Network")
+        local sItem = net and net:FindFirstChild("ServerStatsItem")
+        local item = sItem and sItem:FindFirstChild("Data Ping")
+        return item and item:GetValue()
+    end },
+    { "PerformanceStats .Value", function()
+        local item = game:GetService("Stats").PerformanceStats:FindFirstChild("Ping")
+        return item and item.Value
+    end },
+    { "GetNetworkPing", function()
         return Players.LocalPlayer:GetNetworkPing() * 1000
-    end)
-    if ok and type(v) == "number" and v > 0 then return v end
+    end },
+}
 
+local function GetPingMs()
+    local errs = {}
+    for _, method in ipairs(PING_METHODS) do
+        local ok, v = pcall(method[2])
+        if ok and ValidPing(v) then
+            PingMethod, PingError = method[1], nil
+            return v
+        end
+        errs[#errs + 1] = method[1] .. ": " .. tostring(ok and ("returned " .. tostring(v)) or v)
+    end
+    PingMethod, PingError = "none", table.concat(errs, "\n[Deepwoken]   ")
     return nil
+end
+
+local function GetPingValue()
+    return GetPingMs()
 end
 
 local function PingToComp(ping)
     local comp = math.floor(ping - BASE_PING + 0.5)
     return math.max(-BASE_PING, math.min(300, comp))
+end
+
+-- AUTO PING COMP (same idea as the Auto Green script: live ping, smoothed with a 0.25 factor,
+-- compensate the one-way trip = ping / 2, and no compensation at all under 25 ms)
+local AutoPing = { smoothing = 0.25, min = 25, max = 300, smooth = nil, at = 0, comp = 0 }
+
+local function UpdateAutoPing(now)
+    if now - AutoPing.at < 0.2 then return end
+    local raw = GetPingMs()
+    if not raw then return end
+
+    if AutoPing.smooth == nil or now - AutoPing.at > 1.5 then
+        AutoPing.smooth = raw -- first sample or a long gap: start fresh
+    else
+        AutoPing.smooth = AutoPing.smooth + (raw - AutoPing.smooth) * AutoPing.smoothing
+    end
+    AutoPing.at = now
+
+    if AutoPing.smooth < AutoPing.min then
+        AutoPing.comp = 0
+    else
+        AutoPing.comp = math.min(AutoPing.smooth / 2, AutoPing.max)
+    end
+end
+
+-- ms to fire earlier: automatic when "Auto Ping Comp" is on, otherwise the Ping Comp slider
+local function GetPingComp()
+    local auto = Controls.sb_t_autoping
+    if auto and auto.Value then
+        UpdateAutoPing(os.clock())
+        return AutoPing.comp
+    end
+    return Get("sb_t_ping") or 0
 end
 
 -- STATE
@@ -833,12 +937,6 @@ Reg("sb_range", parrySec:AddSlider({
     Min = 5, Max = 100, Step = 1, Default = 20, Suffix = " studs",
     ConfigKey = "deepwoken.parry.range",
 }))
-Reg("sb_t_ping", parrySec:AddSlider({
-    Title = "Ping Comp",
-    Tooltip = "Fires actions this much earlier. Timings are tuned for ~60 ping; auto-set from your ping on inject.",
-    Min = -BASE_PING, Max = 300, Step = 1, Default = 0, Suffix = "ms",
-    ConfigKey = "deepwoken.timing.ping",
-}))
 Reg("sb_t_uncrouch", parrySec:AddSlider({
     Title = "Uncrouch Timing",
     Tooltip = "Crouch is a toggle: how long after crouching it presses the key again to stand up",
@@ -865,6 +963,25 @@ Reg("sb_parry_feint_grace", feintSec:AddSlider({
     Min = 0, Max = 300, Step = 5, Default = 100, Suffix = "ms",
     ConfigKey = "deepwoken.parry.feintGrace",
 }))
+
+-- PING COMP (own section)
+local pingSec = mainTab:AddSection("Ping Compensation", "Fires actions earlier to cover your latency.", { Column = "right" })
+do
+    local autoPingToggle = Reg("sb_t_autoping", pingSec:AddToggle({
+        Title = "Auto Ping Comp",
+        Tooltip = "On: uses your live (smoothed) ping and fires the one-way trip (ping / 2) earlier, nothing under 25 ms. Off: uses the Ping Comp slider.",
+        Default = true,
+        ConfigKey = "deepwoken.timing.autoPing",
+    }))
+    local pingSlider = Reg("sb_t_ping", pingSec:AddSlider({
+        Title = "Ping Comp",
+        Tooltip = "Used when Auto Ping Comp is off: fires actions this many ms earlier. Timings are tuned for ~60 ping; auto-set from your ping on inject.",
+        Min = -BASE_PING, Max = 300, Step = 1, Default = 0, Suffix = "ms",
+        ConfigKey = "deepwoken.timing.ping",
+    }))
+    pingSlider:SetEnabled(not autoPingToggle.Value)
+    autoPingToggle:OnChanged(function(v) pingSlider:SetEnabled(not v) end)
+end
 
 -- AUTOMATION TAB
 local generalSec = automationTab:AddSection("General", "Quality-of-life automation.", { Column = "left" })
@@ -1243,6 +1360,32 @@ end
 local actionSec = debugTab:AddSection("Actions", "Reload data from GitHub.", { Column = "left" })
 actionSec:AddButton({ Title = "Reload Anim Data", ButtonText = "Reload", Callback = function() LoadData() end })
 actionSec:AddButton({ Title = "Reload Ignored Anims", ButtonText = "Reload", Callback = function() LoadIgnored() end })
+actionSec:AddButton({
+    Title = "Print Anim Table",
+    ButtonText = "Print",
+    Tooltip = "Prints every animation loaded from GitHub (id and its actions) to the console",
+    Callback = function()
+        local ids = {}
+        for id in pairs(AnimDB) do ids[#ids + 1] = id end
+        table.sort(ids, function(a, b)
+            local na, nb = tonumber(a), tonumber(b)
+            if na and nb then return na < nb end
+            return tostring(a) < tostring(b)
+        end)
+
+        print(string.format("[Deepwoken] ===== Animation table (%d entries) from %s =====", #ids, DATA_URL))
+        for _, id in ipairs(ids) do
+            local parts = {}
+            for _, action in ipairs(AnimDB[id].actions) do
+                parts[#parts + 1] = string.format("%s@%.3f", action.kind, action.t)
+            end
+            print(string.format("[Deepwoken] rbxassetid://%s = %s", id, table.concat(parts, ", ")))
+        end
+        print("[Deepwoken] ===== end of animation table =====")
+
+        Nexa:Notify({ Title = "Anim Table", Content = "Printed " .. #ids .. " animations to the console.", Type = "success", Duration = 3 })
+    end,
+})
 
 local statSec = debugTab:AddSection("Status", "Live script info.", { Column = "right" })
 local stLoaded  = statSec:AddStatus({ Title = "Loaded anims",  Default = "0", Tone = "accent" })
@@ -1258,7 +1401,7 @@ local function ApplyPing(samples, silent)
     samples = samples or 1
     local sum, n = 0, 0
     for i = 1, samples do
-        local p = GetPingMs()
+        local p = GetPingValue()
         if p then sum = sum + p n = n + 1 end
         if i < samples then task.wait(0.25) end
     end
@@ -1289,9 +1432,25 @@ local function ApplyPing(samples, silent)
 end
 
 actionSec:AddButton({
-    Title = "Get Ping",
-    ButtonText = "Get Ping",
-    Callback = function() task.spawn(ApplyPing, 3, false) end,
+    Title = "Print Ping",
+    ButtonText = "Print Ping",
+    Callback = function()
+        local myPing = GetPingValue()
+        if not myPing then
+            Log("Ping read failed. Every method tried:\n[Deepwoken]   " .. tostring(PingError))
+            Nexa:Notify({ Title = "Ping", Content = "Could not read your ping (see console).", Type = "warning", Duration = 4 })
+            return
+        end
+
+        local comp = GetPingComp()
+        Log(string.format("Ping: %.0f ms | Comp: %.0f ms | via %s", myPing, comp, PingMethod))
+        Nexa:Notify({
+            Title = "Ping",
+            Content = string.format("%.0f ms (comp %.0f ms) via %s", myPing, comp, PingMethod),
+            Type = "success",
+            Duration = 3,
+        })
+    end,
 })
 
 Reg("print_parries", actionSec:AddToggle({
@@ -1316,8 +1475,17 @@ local function UpdateStatusUI(now)
     stLast:SetValue(tostring(Status.last))
     stDist:SetValue(string.format("%.1f", Status.lastDist))
     stLoop:SetValue(string.format("%.0f / %.0f ms", Status.loopMs, Status.scanMs))
-    if Status.ping and Status.ping > 0 then
-        stPing:SetValue(string.format("%.0f / %d ms", Status.ping, Status.comp or 0))
+    local livePing = GetPingValue()
+    if livePing then
+        Status.ping = livePing
+        if Controls.sb_t_autoping.Value then
+            UpdateAutoPing(now)
+            stPing:SetValue(string.format("%.0f / %.0f ms (auto)", AutoPing.smooth or livePing, AutoPing.comp), "accent")
+        else
+            stPing:SetValue(string.format("%.0f / %d ms", livePing, Controls.sb_t_ping.Value or 0), "accent")
+        end
+    else
+        stPing:SetValue("unavailable", "muted")
     end
     stAtmos:SetValue(tostring(Status.atmos or 0))
 end
@@ -1354,9 +1522,15 @@ local function ActionKey(kind, hold)
     return KEY_PARRY, hold
 end
 
-local function Perform(kind, hold, tag, model, id)
+local function KeyName(vk)
+    return vk == KEY_PARRY and "F" or vk == KEY_DODGE and "Q" or vk == KEY_JUMP and "Space" or "Ctrl"
+end
+
+-- report(stage, configuredMs) is optional: the Test buttons use it to show every step of the sequence
+local function Perform(kind, hold, tag, model, id, report)
     local vk, h = ActionKey(kind, hold)
     PressKey(vk, h)
+    if report then report("Pressed " .. KeyName(vk) .. " (" .. kind .. ")", 0) end
 
     -- crouch is a toggle: press it again to stand back up
     if kind == "crouch" then
@@ -1370,39 +1544,64 @@ local function Perform(kind, hold, tag, model, id)
                 task.wait(0.05)
                 pcall(keyrelease, KEY_CROUCH)
             end
+            if report then report("Uncrouch (Ctrl again)", uncrouch * 1000) end
         end)
     end
 
     -- roll cancel: right click a set time after a dodge (Q) goes out
-    local rollCancel = Get("sb_t_rollcancel") or 0
-    if vk == KEY_DODGE and rollCancel > 0 then
-        task.spawn(function()
-            task.wait(rollCancel / 1000)
-            if Nexa:IsAlive() then RightClick() end
-        end)
+    if vk == KEY_DODGE then
+        local rollCancel = Get("sb_t_rollcancel") or 0
+        if rollCancel > 0 then
+            task.spawn(function()
+                task.wait(rollCancel / 1000)
+                if Nexa:IsAlive() then RightClick() end
+                if report then report("Roll cancel (right click)", rollCancel) end
+            end)
+        elseif report then
+            report("Roll cancel is off (Roll Cancel Timing is 0)", 0)
+        end
     end
 
     if Get("print_parries") then
         local okN, nm = pcall(function() return model.Name end)
         Log(string.format("%s%s -> %s | %s | rbxassetid://%s",
-            kind, tag,
-            vk == KEY_PARRY and "F" or vk == KEY_DODGE and "Q" or vk == KEY_JUMP and "Space" or "Ctrl",
+            kind, tag, KeyName(vk),
             okN and CleanName(nm) or "?", tostring(id)))
     end
 end
 
 do
-    -- Test buttons wait 3 seconds first, so you can click back into the game
+    -- Test buttons wait 3 seconds (click back into the game), then run the FULL sequence through the
+    -- same Perform path as real actions: crouch -> uncrouch, dodge -> roll cancel. Every step is
+    -- reported with the delay you set and the delay actually measured.
+    local testBusy = false
+
     local function TestAction(title, kind)
         actionSec:AddButton({
             Title = title,
             ButtonText = "Run in 3s",
             Callback = function()
-                Nexa:Notify({ Title = "Test", Content = title .. " fires in 3 seconds", Type = "info", Duration = 3 })
+                if testBusy then return end
+                testBusy = true
+                Nexa:Notify({ Title = title, Content = "Fires in 3 seconds", Type = "info", Duration = 3 })
                 task.wait(3)
-                if not Nexa:IsAlive() then return end
-                Perform(kind, 0.05, " (test)", { Name = "Test" }, "test")
-                Nexa:Notify({ Title = "Test", Content = title .. " fired", Type = "success", Duration = 2 })
+
+                if Nexa:IsAlive() then
+                    local t0 = os.clock()
+                    Perform(kind, 0.05, " (test)", { Name = "Test" }, "test", function(stage, configuredMs)
+                        local actual = (os.clock() - t0) * 1000
+                        local msg = configuredMs > 0
+                            and string.format("%s - set %.0fms, measured %.0fms", stage, configuredMs, actual)
+                            or stage
+                        Log("Test: " .. msg)
+                        Nexa:Notify({ Title = title, Content = msg, Type = "info", Duration = 3 })
+                    end)
+
+                    -- stay locked until the whole sequence has finished
+                    local tail = math.max(Get("sb_t_uncrouch") or 0, Get("sb_t_rollcancel") or 0)
+                    task.wait(0.4 + tail / 1000)
+                end
+                testBusy = false
             end,
         })
     end
@@ -1413,7 +1612,7 @@ end
 
 local function Schedule(startTime, info, akey, model, id)
     local delay = 0
-    local ping  = Get("sb_t_ping") or 0
+    local ping  = GetPingComp()
     local hold  = 0.05
     local grace = (Get("sb_parry_feint_grace") or 0) / 1000
     local now   = os.clock()
@@ -2115,6 +2314,7 @@ task.spawn(function()
         end
 
         if cOn.Value then
+            if Controls.sb_t_autoping.Value then UpdateAutoPing(now) end
             if now - lastScan >= SCAN_INTERVAL then
                 lastScan = now
                 local ok, err = pcall(ScanStep, now)
