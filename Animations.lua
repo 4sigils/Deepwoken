@@ -1,13 +1,11 @@
 return {-- ✅ / ❌
     -- Shogun
-    ["118154222392812"] = { -- Green Double Slash✅
+    ["118154222392812"] = { -- Green Double Slash
         type = "parry",
         t = {0.65, 1.45}
     },
 
-    ["86527092652774"] = 0.575, -- Single Diagonal Slash✅
-
-    ["86527092652774"] = 0.6, -- Upsweep
+    ["86527092652774"] = 0.575, -- Single Diagonal Slash
 
     ["134600514326413"] = { -- Kick into Slash
         type = "parry",
@@ -34,7 +32,7 @@ return {-- ✅ / ❌
     },
 
     ["76782656543761"] = { -- Flurry
-        {type = "parry", t = 0.4},
+        {type = "parry", t = 0.375},
         {type = "dodge", t = 1.2},
         {type = "parry", t = 2.15},
         {type = "parry", t = 2.5},
