@@ -997,6 +997,30 @@ Reg("auto_ragdoll_cancel", generalSec:AddToggle({
     Default = false,
     ConfigKey = "deepwoken.automation.ragdollCancel",
 }))
+Reg("ritual_keys_only", generalSec:AddToggle({
+    Title = "Ritual: Key Presses Only",
+    Tooltip = "Skips the remote and types the ritual keys instead. Try this if Auto Ritual does nothing on your setup.",
+    Default = false,
+    ConfigKey = "deepwoken.automation.ritualKeysOnly",
+}))
+Reg("ritual_debug", generalSec:AddToggle({
+    Title = "Ritual Debug",
+    Tooltip = "Prints what Auto Ritual reads and sends to the console.",
+    Default = false,
+    ConfigKey = "deepwoken.automation.ritualDebug",
+}))
+Reg("ritual_delay", generalSec:AddSlider({
+    Title = "Ritual Start Delay",
+    Tooltip = "Wait after the ritual appears before typing it. Raise it if inputs go out too early (high ping / low FPS).",
+    Min = 0, Max = 1000, Step = 10, Default = 300, Suffix = "ms",
+    ConfigKey = "deepwoken.automation.ritualDelay",
+}))
+Reg("ritual_gap", generalSec:AddSlider({
+    Title = "Ritual Input Gap",
+    Tooltip = "Time between each key. Raise it if the game drops inputs.",
+    Min = 30, Max = 500, Step = 5, Default = 120, Suffix = "ms",
+    ConfigKey = "deepwoken.automation.ritualGap",
+}))
 
 -- VISUALS TAB
 
@@ -1720,9 +1744,11 @@ end
 -- Auto Ritual
 -- Wrapped in do...end so its locals don't count against the script's top-level local limit.
 do
-    local RITUAL_START_DELAY = 0.3
-    local RITUAL_GAP = 0.12
     local RITUAL_HOLD = 0.05
+
+    local function dbg(msg)
+        if Get("ritual_debug") then Log("Ritual: " .. msg) end
+    end
 
     -- Which ritual number each key is bound to (swap the numbers if the game rejects the inputs)
     local KEY_TO_INDEX = { Z = 1, X = 2, C = 3, V = 4 }
@@ -1752,6 +1778,13 @@ do
         return nil
     end
 
+    -- default Z/X/C/V, or any single letter/digit (players can rebind their keys)
+    local function validKey(text)
+        return KEY_TO_INDEX[text] ~= nil or text:match("^[A-Z0-9]$") ~= nil
+    end
+
+    -- returns: seq (usable keys in order), id (frame addresses, stable while typing), frame count,
+    -- raw label texts, sig (id + labels: changes when a new ritual shows up even if frames are reused)
     local function readRitual(symbols)
         local frames = {}
         for _, frame in ipairs(symbols:GetChildren()) do
@@ -1771,43 +1804,57 @@ do
         end
         if allX then table.sort(frames, function(a, b) return xs[a] < xs[b] end) end
 
-        local seq = {}
+        local seq, raw = {}, {}
         for _, frame in ipairs(frames) do
             local label = frame:FindFirstChild("TextLabel")
-            local text = string.upper(tostring(label.Text))
-            if KEY_TO_INDEX[text] then seq[#seq + 1] = text end
+            local text = string.upper((tostring(label.Text):gsub("%s+", "")))
+            raw[#raw + 1] = text
+            if validKey(text) then seq[#seq + 1] = text end
         end
-        return seq, ritualId, #frames
+        return seq, ritualId, #frames, raw, ritualId .. "|" .. table.concat(raw, "")
     end
 
     local remoteBroken = false
     local function sendRitualInput(letter)
-        if not remoteBroken then
+        if not remoteBroken and not Get("ritual_keys_only") and KEY_TO_INDEX[letter] then
             local r = getRitualRemote()
             if r then
-                local ok = pcall(function() r:FireServer(KEY_TO_INDEX[letter]) end)
-                if ok then return end
+                local ok, err = pcall(function() r:FireServer(KEY_TO_INDEX[letter]) end)
+                if ok then
+                    dbg("remote " .. letter)
+                    return
+                end
+                dbg("remote failed (" .. tostring(err) .. "), switching to key presses")
+            else
+                dbg("remote not found, switching to key presses")
             end
             remoteBroken = true
         end
-        pcall(keypress, KEYCODES[letter])
+        local vk = KEYCODES[letter] or string.byte(letter)
+        dbg("key " .. letter)
+        pcall(keypress, vk)
         task.wait(RITUAL_HOLD)
-        pcall(keyrelease, KEYCODES[letter])
+        pcall(keyrelease, vk)
     end
 
-    local function RitualStep(lastId)
+    local function RitualStep(lastSig)
         local symbols = getSymbols()
         if not symbols then return nil end
 
-        local seq, id, count = readRitual(symbols)
+        local seq, id, count, raw, sig = readRitual(symbols)
         if count == 0 then return nil end
-        if id == lastId or #seq == 0 then return lastId end
+        if sig == lastSig then return lastSig end
+        if #seq == 0 then
+            dbg(string.format("saw %d symbol(s) but no usable keys, labels: [%s]", count, table.concat(raw, ",")))
+            return sig
+        end
 
-        task.wait(RITUAL_START_DELAY)
-        if not Get("auto_ritual") then return id end
+        dbg(string.format("detected %d symbol(s): %s", #seq, table.concat(seq, " ")))
+        task.wait((Get("ritual_delay") or 300) / 1000)
+        if not Get("auto_ritual") then return sig end
 
-        local seq2, id2 = readRitual(symbols)
-        if #seq2 == 0 then return id end
+        local seq2, id2, _, _, sig2 = readRitual(symbols)
+        if #seq2 == 0 then return sig end
 
         for i, letter in ipairs(seq2) do
             if not Nexa:IsAlive() or not Get("auto_ritual") then break end
@@ -1816,13 +1863,16 @@ do
             if not sym then break end
             if i > 1 then
                 local _, curId = readRitual(sym)
-                if curId ~= id2 then return nil end
+                if curId ~= id2 then
+                    dbg("ritual changed while typing, stopping")
+                    return nil
+                end
             end
 
             sendRitualInput(letter)
-            task.wait(RITUAL_GAP)
+            task.wait((Get("ritual_gap") or 120) / 1000)
         end
-        return id2
+        return sig2
     end
 
     local cRitual = Controls.auto_ritual
