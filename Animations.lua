@@ -23,7 +23,7 @@ return {-- ✅ / ❌
 
     ["129588531110694"] = { -- Crouch Low Slash
         type = "crouch",
-        t = 0.475
+        t = 0.4565
     },
 
     ["112423929319383"] = { -- Jump Stomps + Slashes✅
@@ -34,7 +34,7 @@ return {-- ✅ / ❌
     },
 
     ["76782656543761"] = { -- Flurry
-        {type = "parry", t = 0.45},
+        {type = "parry", t = 0.4},
         {type = "dodge", t = 1.2},
         {type = "parry", t = 2.15},
         {type = "parry", t = 2.5},
