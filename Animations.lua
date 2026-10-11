@@ -5,13 +5,13 @@ return {-- ✅ / ❌
         t = {0.65, 1.45}
     },
 
-    ["86527092652774"] = 0.6, -- Single Diagonal Slash✅
+    ["86527092652774"] = 0.575, -- Single Diagonal Slash✅
 
     ["86527092652774"] = 0.6, -- Upsweep
 
-    ["134600514326413"] = { -- Stomp into Slash
+    ["134600514326413"] = { -- Kick into Slash
         type = "parry",
-        t = {0.7, 2.0}
+        t = {0.675, 2.0}
     },
 
     -- Dodge animations
