@@ -42,7 +42,7 @@ return {-- ✅ / ❌
         {type = "parry", t = 0.35},
         {type = "parry", t = 0.775},
         {type = "dodge", t = 1.45},
-        {type = "dodge", t = 1.9},
+        {type = "dodge", t = 1.825},
         {type = "parry", t = 2.7},
         {type = "parry", t = 3.1},
         {type = "parry", t = 3.65},
