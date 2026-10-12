@@ -1,3 +1,4 @@
+return {
 -- Shogun
     ["118154222392812"] = { -- Green Double Slash
         type = "parry",
@@ -45,3 +46,5 @@
         {type = "parry", t = 3.65},
         {type = "parry", t = 4.1},
     },
+
+}
