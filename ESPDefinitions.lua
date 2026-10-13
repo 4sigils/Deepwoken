@@ -10,5 +10,5 @@ return {
     ["BigArtifact"] = "Artifact",
 
     -- Mobs / NPCs
-    [".training_dummy"] = "Training Dummy",
+    [".trainer_dummy"] = "Training Dummy",
 }
