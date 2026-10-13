@@ -1,5 +1,13 @@
 local IGNORE_URL = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/IgnoredAnimations.lua"
-local DATA_URL   = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/Animations.lua"
+local ESP_URL    = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/ESPDefinitions.lua"
+local DATA_URL   = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/animations/"
+-- Every file in the animations folder. Add new files here; each one returns { ["id"] = timing, ... }
+local DATA_FILES = {
+    "Weapons/Light.lua",
+    "Weapons/Medium.lua",
+    "Weapons/Heavy.lua",
+    "VowOfIron.lua",
+}
 
 local LOGO_URL = "https://cdn.discordapp.com/attachments/1402876855840804895/1558405775167201400/noFilter_1.png?ex=6acb51fa&is=6aca007a&hm=8ff9153ff0a850fa34512fbe989660978c0583fa43b6a417caac6a61de7189fd&"
 -- Embedded 4x4 black PNG (no download, no 1920x1080 texture to decode and draw every frame)
@@ -589,40 +597,41 @@ local function LoadData()
     AnimDB = {}
     Status.loaded = 0
 
-    local src = HttpGet(DATA_URL)
-    if not src then
-        Log("Failed to download anim data from " .. DATA_URL)
-        return
-    end
+    local n, failed = 0, 0
+    for _, path in ipairs(DATA_FILES) do
+        local src = HttpGet(DATA_URL .. path)
+        local data
+        if src then
+            if type(loadstring) == "function" then
+                local fn = loadstring(src)
+                if fn then
+                    local ok, res = pcall(fn)
+                    if ok and type(res) == "table" then data = res end
+                end
+            end
+            if not data then
+                local ok, res = pcall(ParseLua, src)
+                if ok and type(res) == "table" then data = res end
+            end
+        end
 
-    local data
-    if type(loadstring) == "function" then
-        local fn = loadstring(src)
-        if fn then
-            local ok, res = pcall(fn)
-            if ok and type(res) == "table" then data = res end
+        if data then
+            for id, value in pairs(data) do
+                local actions = Normalize(value)
+                if actions then
+                    local clean = CleanId(id) or tostring(id)
+                    AnimDB[clean] = {name = clean, actions = actions}
+                    n = n + 1
+                end
+            end
+        else
+            failed = failed + 1
+            Log("Failed to load anim file: " .. path .. (src and (" (could not parse; starts with: " .. src:sub(1, 60) .. ")") or " (download failed)"))
         end
     end
-    if not data then
-        local ok, res = pcall(ParseLua, src)
-        if ok and type(res) == "table" then data = res end
-    end
-    if not data then
-        Log("Could not read anim data. First 80 chars: " .. src:sub(1, 80))
-        return
-    end
 
-    local n = 0
-    for id, value in pairs(data) do
-        local actions = Normalize(value)
-        if actions then
-            local clean = CleanId(id) or tostring(id)
-            AnimDB[clean] = {name = clean, actions = actions}
-            n = n + 1
-        end
-    end
     Status.loaded = n
-    Log("Loaded " .. n .. " animations")
+    Log("Loaded " .. n .. " animations from " .. (#DATA_FILES - failed) .. "/" .. #DATA_FILES .. " files")
 end
 
 -- IGNORED ANIMS
@@ -924,6 +933,12 @@ enabledToggle:AddKeybind({
     ConfigKey = "deepwoken.parry.enabled.bind",
     OnPressed = function() enabledToggle:SetValue(not enabledToggle:GetValue()) end,
 })
+Reg("auto_roll_cancel", parrySec:AddToggle({
+    Title = "Auto Roll Cancel",
+    Tooltip = "Right-clicks a short time after every dodge (Q) goes out to cancel the roll. Uses Roll Cancel Timing.",
+    Default = false,
+    ConfigKey = "deepwoken.parry.autoRollCancel",
+}))
 Reg("sb_parry_players", parrySec:AddToggle({
     Title = "Auto Parry Players",
     Default = true,
@@ -959,8 +974,8 @@ Reg("sb_t_uncrouch", parrySec:AddSlider({
 }))
 Reg("sb_t_rollcancel", parrySec:AddSlider({
     Title = "Roll Cancel Timing",
-    Tooltip = "How long after a dodge (Q) it waits before right-clicking to roll cancel. 0 = off",
-    Min = 0, Max = 1000, Step = 5, Default = 0, Suffix = "ms",
+    Tooltip = "How long after a dodge (Q) it waits before right-clicking to roll cancel. Only used while Auto Roll Cancel is on.",
+    Min = 0, Max = 1000, Step = 5, Default = 100, Suffix = "ms",
     ConfigKey = "deepwoken.timing.rollCancel",
 }))
 
@@ -1016,6 +1031,614 @@ Reg("auto_ragdoll_cancel", generalSec:AddToggle({
 }))
 
 -- VISUALS TAB
+local espWorldSec = visualsTab:AddSection("World", "World ESP.", { Column = "left" })
+Reg("esp_world", espWorldSec:AddToggle({
+    Title = "World ESP",
+    Tooltip = "Placeholder, not implemented yet.",
+    Default = false,
+    ConfigKey = "deepwoken.visuals.espWorld",
+}))
+local espLootSec = visualsTab:AddSection("Loot", "Pickups and drops.", { Column = "left" })
+do
+    local t = espLootSec:AddToggle({
+        Title = "Artifact ESP",
+        Tooltip = "Draws every BigArtifact in workspace.Thrown. Needs Enabled turned on in Options.",
+        Default = false,
+        ConfigKey = "deepwoken.visuals.espArtifact",
+    })
+    Reg("esp_artifact", t)
+    Reg("esp_artifact_color", t:AddColorPicker({
+        Default = Color3.fromRGB(255, 220, 60),
+        ConfigKey = "deepwoken.visuals.espArtifactColor",
+    }))
+end
+local espMiscSec = visualsTab:AddSection("Misc", "Other ESP.", { Column = "left" })
+Reg("esp_misc", espMiscSec:AddToggle({
+    Title = "Misc ESP",
+    Tooltip = "Placeholder, not implemented yet.",
+    Default = false,
+    ConfigKey = "deepwoken.visuals.espMisc",
+}))
+local espEntitiesSec = visualsTab:AddSection("Entities", "Things that move around.", { Column = "right" })
+do
+    local t = espEntitiesSec:AddToggle({
+        Title = "NPC ESP",
+        Tooltip = "Draws every NPC under workspace.NPCs. Needs Enabled turned on in Options.",
+        Default = false,
+        ConfigKey = "deepwoken.visuals.espNpc",
+    })
+    Reg("esp_npc", t)
+    Reg("esp_npc_color", t:AddColorPicker({
+        Default = Color3.fromRGB(255, 150, 50),
+        ConfigKey = "deepwoken.visuals.espNpcColor",
+    }))
+end
+do
+    local t = espEntitiesSec:AddToggle({
+        Title = "Mob ESP",
+        Tooltip = "Draws every mob in workspace.Live (players are skipped). Needs Enabled turned on in Options.",
+        Default = false,
+        ConfigKey = "deepwoken.visuals.espMob",
+    })
+    Reg("esp_mob", t)
+    Reg("esp_mob_color", t:AddColorPicker({
+        Default = Color3.fromRGB(255, 70, 70),
+        ConfigKey = "deepwoken.visuals.espMobColor",
+    }))
+end
+local espOptionsSec = visualsTab:AddSection("Options", "How the ESP is drawn.", { Column = "right" })
+Reg("esp_enabled", espOptionsSec:AddToggle({
+    Title = "Enabled",
+    Tooltip = "Master switch for every ESP.",
+    Default = true,
+    ConfigKey = "deepwoken.visuals.espEnabled",
+}))
+Reg("esp_distance", espOptionsSec:AddToggle({
+    Title = "Distance",
+    Tooltip = "Shows the distance in studs under the box.",
+    Default = true,
+    ConfigKey = "deepwoken.visuals.espDistance",
+}))
+Reg("esp_box", espOptionsSec:AddToggle({
+    Title = "Box",
+    Tooltip = "Draws a box around the target.",
+    Default = true,
+    ConfigKey = "deepwoken.visuals.espBox",
+}))
+Reg("esp_name", espOptionsSec:AddToggle({
+    Title = "Name",
+    Tooltip = "Shows the name above the box.",
+    Default = true,
+    ConfigKey = "deepwoken.visuals.espName",
+}))
+local espHealthToggle = Reg("esp_health", espOptionsSec:AddToggle({
+    Title = "Health",
+    Tooltip = "Master switch for health display. Never drawn for NPCs or loot. The three options below only work while this is on.",
+    Default = true,
+    ConfigKey = "deepwoken.visuals.espHealth",
+}))
+local espHealthSubs = {
+    Reg("esp_health_bar", espOptionsSec:AddToggle({
+        Title = "Bar",
+        Tooltip = "Health bar on the left of the box.",
+        Default = true,
+        ConfigKey = "deepwoken.visuals.espHealthBar",
+    })),
+    Reg("esp_health_text", espOptionsSec:AddToggle({
+        Title = "Text",
+        Tooltip = "Shows the health in the label: name - [HP].",
+        Default = false,
+        ConfigKey = "deepwoken.visuals.espHealthText",
+    })),
+    Reg("esp_health_color", espOptionsSec:AddToggle({
+        Title = "Based on HP",
+        Tooltip = "Colours the health bar and text from green to yellow to red as health drops. Off = plain green bar, text in the ESP colour.",
+        Default = true,
+        ConfigKey = "deepwoken.visuals.espHealthColor",
+    })),
+}
+do
+    local function applyHealthSubs(on)
+        for _, c in ipairs(espHealthSubs) do pcall(function() c:SetEnabled(on and true or false) end) end
+    end
+    applyHealthSubs(espHealthToggle:GetValue())
+    espHealthToggle:OnChanged(applyHealthSubs)
+end
+Reg("esp_range", espOptionsSec:AddSlider({
+    Title = "Render Distance",
+    Tooltip = "Targets further than this are not drawn. 0 draws everything.",
+    Min = 0, Max = 1000, Step = 10, Default = 500, Suffix = " studs",
+    ConfigKey = "deepwoken.visuals.espRange",
+}))
+
+-- ESP drawing. Wrapped in do...end so its locals don't count against the script's top-level local limit.
+do
+    local WHITE = Color3.fromRGB(255, 255, 255)
+    local BAR_BACK = Color3.fromRGB(20, 20, 20)
+    local BAR_GREEN = Color3.fromRGB(60, 255, 100)
+    local REFRESH = 0.5
+    local BOX_UP, BOX_DOWN = 2.9, 3.1 -- studs above / below an NPC's root part (roughly a full character)
+
+    local hasDrawing = type(Drawing) == "table" or type(Drawing) == "userdata"
+    if not hasDrawing then warn("[Deepwoken] Drawing library not available - ESP disabled") end
+
+    local cx, cy, cz
+    local m00, m01, m02, m10, m11, m12, m20, m21, m22
+    local hw, hh, focal = 0, 0, 0
+    local lastFov, tf = -1, 1
+
+    local function camUpdate()
+        local cam = workspace.CurrentCamera
+        if not cam then return false end
+        local vp, fov = cam.ViewportSize, cam.FieldOfView
+        hw, hh = vp.X * .5, vp.Y * .5
+        if fov ~= lastFov then
+            lastFov = fov
+            tf = math.tan(math.rad(fov) * .5)
+        end
+        focal = hh / tf
+        cx, cy, cz, m00, m01, m02, m10, m11, m12, m20, m21, m22 = cam.CFrame:GetComponents()
+        return true
+    end
+
+    local function project(x, y, z)
+        local dx, dy, dz = x - cx, y - cy, z - cz
+        local depth = -(m02 * dx + m12 * dy + m22 * dz)
+        if depth < .01 then return end
+        local s = focal / depth
+        return hw + (m00 * dx + m10 * dy + m20 * dz) * s, hh - (m01 * dx + m11 * dy + m21 * dz) * s
+    end
+
+    -- only touch a Drawing property when it actually changes
+    local visState = setmetatable({}, { __mode = "k" })
+    local function setVisible(o, v)
+        if visState[o] ~= v then
+            visState[o] = v
+            o.Visible = v
+        end
+    end
+
+    local function newText()
+        local t = Drawing.new("Text")
+        t.Size = 13
+        t.Center = true
+        t.Outline = true
+        t.Color = WHITE
+        t.Transparency = 1
+        t.Visible = false
+        pcall(function() t.Font = Drawing.Fonts.System end)
+        return t
+    end
+
+    local function newEntry()
+        local box = Drawing.new("Square")
+        box.Filled = false
+        box.Thickness = 1
+        box.Color = WHITE
+        box.Transparency = 1
+        box.Visible = false
+        local back = Drawing.new("Square")
+        back.Filled = true
+        back.Color = BAR_BACK
+        back.Transparency = 1
+        back.Visible = false
+        local fill = Drawing.new("Square")
+        fill.Filled = true
+        fill.Transparency = 1
+        fill.Visible = false
+        local e = { box = box, back = back, fill = fill, name = newText(), dist = newText() }
+        -- health label is drawn as two left-aligned pieces (name / [HP]) so they can have different colours
+        e.hpA, e.hpB = newText(), newText()
+        e.hpA.Center, e.hpB.Center = false, false
+        return e
+    end
+
+    local function hideEntry(e)
+        setVisible(e.box, false)
+        setVisible(e.back, false)
+        setVisible(e.fill, false)
+        setVisible(e.name, false)
+        setVisible(e.dist, false)
+        setVisible(e.hpA, false)
+        setVisible(e.hpB, false)
+    end
+
+    local function removeEntry(e)
+        for _, o in pairs(e) do
+            if type(o) == "table" or type(o) == "userdata" then
+                pcall(function() o.Visible = false end)
+                pcall(function() o:Remove() end)
+            end
+        end
+    end
+
+    -- ESP kinds. health = whether health may be drawn for this kind (off for NPCs and loot).
+    local KINDS = {
+        npc      = { toggle = "esp_npc",      color = "esp_npc_color",      health = false },
+        mob      = { toggle = "esp_mob",      color = "esp_mob_color",      health = true },
+        artifact = { toggle = "esp_artifact", color = "esp_artifact_color", health = false },
+    }
+
+    local function getHumanoid(model)
+        local h = model:FindFirstChildOfClass("Humanoid")
+        if not h then h = model:FindFirstChild("Humanoid") end
+        return h
+    end
+
+    local function firstMeshPart(model)
+        local fallback
+        for _, c in ipairs(model:GetChildren()) do
+            local okc, cls = pcall(function() return c.ClassName end)
+            if okc then
+                if cls == "MeshPart" then return c end
+                if not fallback and (cls == "Part" or cls == "UnionOperation") then fallback = c end
+            end
+        end
+        if fallback then return fallback end
+        local ok, d = pcall(function() return model:FindFirstChildWhichIsA("MeshPart", true) end)
+        if ok and d then return d end
+        return model.PrimaryPart
+    end
+
+    local function num(v) return type(v) == "number" and v == v and v or nil end
+
+    -- Health / max health for an NPC. Humanoid first, then attributes, then Health/MaxHealth values.
+    local function readHealth(model, rec)
+        if not rec.hum then rec.hum = getHumanoid(model) end
+        if rec.hum then
+            local ok, hp, mx = pcall(function() return rec.hum.Health, rec.hum.MaxHealth end)
+            hp, mx = ok and num(hp), ok and num(mx)
+            if hp and mx and mx > 0 then return hp, mx end
+        end
+        local ok, hp, mx = pcall(function()
+            return model:GetAttribute("Health"), model:GetAttribute("MaxHealth")
+        end)
+        hp, mx = ok and num(hp), ok and num(mx)
+        if hp and mx and mx > 0 then return hp, mx end
+        local okv, hv, mv = pcall(function()
+            local a, b = model:FindFirstChild("Health"), model:FindFirstChild("MaxHealth")
+            return a and a.Value, b and b.Value
+        end)
+        hv, mv = okv and num(hv), okv and num(mv)
+        if hv and mv and mv > 0 then return hv, mv end
+        return nil
+    end
+
+    -- ESP DEFINITIONS (ESPDefinitions.lua on GitHub): raw model name -> display name, or false to hide the name.
+    -- Built-in defaults are used until / unless the file loads. File format:
+    --     return { ["BigArtifact"] = "Artifact", ["SomeModel"] = false }
+    -- (or the same table under a key called Names)
+    local ESPNames = { BigArtifact = "Artifact" }
+
+    -- Display name for a raw model name. Tries, in order: the exact name, the name without its trailing
+    -- number, then both of those without a leading dot. So [".Mob"] = "Mob" covers ".Mob124", ".Mob125", ...
+    -- A definition of false hides the name. Nothing matched: the name with its leading dot removed.
+    local function resolveName(raw)
+        local noNum = raw:gsub("%d+$", "")
+        local clean = raw:gsub("^%.", "")
+        local cleanNoNum = noNum:gsub("^%.", "")
+        local v = ESPNames[raw]
+        if v == nil then v = ESPNames[noNum] end
+        if v == nil then v = ESPNames[clean] end
+        if v == nil then v = ESPNames[cleanNoNum] end
+        if v == nil then v = clean end
+        return v
+    end
+    function ReloadESPDefinitions()
+        local src = HttpGet(ESP_URL)
+        local data
+        if src then
+            if type(loadstring) == "function" then
+                local fn = loadstring(src)
+                if fn then
+                    local ok, res = pcall(fn)
+                    if ok and type(res) == "table" then data = res end
+                end
+            end
+            if not data then
+                local ok, res = pcall(ParseLua, src)
+                if ok and type(res) == "table" then data = res end
+            end
+        end
+        if not data then
+            Log("ESP definitions not loaded (using defaults)")
+            return
+        end
+        if type(data.Names) == "table" then data = data.Names end
+        local names, n = { BigArtifact = "Artifact" }, 0
+        for raw, shown in pairs(data) do
+            if type(raw) == "string" and (type(shown) == "string" or shown == false) then
+                names[raw] = shown
+                n = n + 1
+            end
+        end
+        ESPNames = names
+        Log("Loaded " .. n .. " ESP definitions")
+    end
+    task.spawn(ReloadESPDefinitions)
+
+    local warnedNoHealth = {}
+    local function warnNoHealth(model, rec)
+        if warnedNoHealth[rec.name] then return end
+        warnedNoHealth[rec.name] = true
+        local parts = {}
+        pcall(function()
+            for _, c in ipairs(model:GetChildren()) do parts[#parts + 1] = c.Name .. ":" .. c.ClassName end
+        end)
+        warn("[Deepwoken] ESP: can't read health for NPC '" .. rec.name .. "' (humanoid " .. (rec.hum and "found" or "missing")
+            .. "). Children: " .. table.concat(parts, ", "))
+    end
+
+    -- tracked targets: model -> { kind, part, hum, name, entry }
+    local recs = {}
+    local nextRefresh = 0
+
+    local function refreshTargets()
+        local seen = {}
+
+        local npcFolder = workspace:FindFirstChild("NPCs")
+        if npcFolder then
+            for _, model in ipairs(npcFolder:GetChildren()) do
+                local rec = recs[model]
+                if not rec then
+                    local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                    if hrp then
+                        rec = { kind = "npc", part = hrp, hum = getHumanoid(model), name = model.Name, entry = newEntry() }
+                        recs[model] = rec
+                    end
+                end
+                if rec then seen[model] = true end
+            end
+        end
+
+        local live = workspace:FindFirstChild("Live")
+        if live then
+            for _, model in ipairs(live:GetChildren()) do
+                local nm = model.Name
+                -- never pick up players: skip anything whose name is in game.Players
+                if not Players:FindFirstChild(nm) then
+                    local rec = recs[model]
+                    if not rec then
+                        local hrp = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart
+                        if hrp then
+                            rec = { kind = "mob", part = hrp, hum = getHumanoid(model), name = nm, entry = newEntry() }
+                            recs[model] = rec
+                        end
+                    end
+                    if rec then seen[model] = true end
+                end
+            end
+        end
+
+        local thrown = workspace:FindFirstChild("Thrown")
+        if thrown then
+            for _, model in ipairs(thrown:GetChildren()) do
+                if model.Name == "BigArtifact" then
+                    local rec = recs[model]
+                    if not rec or not rec.part then
+                        local part = firstMeshPart(model)
+                        if part then
+                            if rec then removeEntry(rec.entry) end
+                            rec = { kind = "artifact", part = part, name = model.Name, entry = newEntry() }
+                            recs[model] = rec
+                        end
+                    end
+                    if rec then seen[model] = true end
+                end
+            end
+        end
+
+        for model, rec in pairs(recs) do
+            if not seen[model] then
+                removeEntry(rec.entry)
+                recs[model] = nil
+            end
+        end
+    end
+
+    local function hideAll()
+        for _, rec in pairs(recs) do hideEntry(rec.entry) end
+    end
+
+    -- 100% green -> 50% yellow -> 0% red
+    local function healthColor(f)
+        if f >= .5 then
+            local t = (f - .5) * 2
+            return Color3.fromRGB(math.floor(255 - 185 * t), math.floor(220 + 35 * t), math.floor(60 + 60 * t))
+        end
+        local t = f * 2
+        return Color3.fromRGB(255, math.floor(60 + 160 * t), 60)
+    end
+
+    -- Text widths: the executor's TextBounds jumps around and runs wide, so the label is laid out from a fixed
+    -- per-letter estimate instead. If the [HP] sits too far from the name lower TEXT_SCALE, if it touches raise it.
+    local TEXT_SCALE = 0.85
+    local LABEL_GAP = 20 -- pixels between "name -" and "[HP]"
+    local frameNo = 0
+    local function estWidth(str)
+        local w = 0
+        for i = 1, #str do
+            local ch = str:sub(i, i)
+            if ch:find("[il%.,:;!|' ]") then w = w + 3.1
+            elseif ch:find("[%[%]%(%)%-ftjrI]") then w = w + 4.1
+            elseif ch:find("[mwMW]") then w = w + 9.4
+            elseif ch:find("%u") then w = w + 7.5
+            else w = w + 6.2 end
+        end
+        return w * TEXT_SCALE
+    end
+    local function pieceWidth(_, str) return estWidth(str) end
+
+    local function drawTarget(model, rec, range)
+        local e, kind = rec.entry, KINDS[rec.kind]
+        if not Get(kind.toggle) then return hideEntry(e) end
+
+        local okp, pos, size = pcall(function() return rec.part.Position, rec.part.Size end)
+        if not okp or not pos then return hideEntry(e) end
+
+        local dx, dy, dz = pos.X - cx, pos.Y - cy, pos.Z - cz
+        local dist = math.sqrt(dx * dx + dy * dy + dz * dz)
+        if range > 0 and dist > range then return hideEntry(e) end
+
+        local tx, ty, bx, by, w
+        if rec.kind ~= "artifact" or not size then
+            tx, ty = project(pos.X, pos.Y + BOX_UP, pos.Z)
+            bx, by = project(pos.X, pos.Y - BOX_DOWN, pos.Z)
+            if tx and bx then w = (by - ty) * 0.55 end
+        else
+            -- object: size the box from the part itself (width measured along the camera's right axis)
+            local hy = size.Y * .5
+            local r = math.max(size.X, size.Z) * .5
+            tx, ty = project(pos.X, pos.Y + hy, pos.Z)
+            bx, by = project(pos.X, pos.Y - hy, pos.Z)
+            local lx = project(pos.X - m00 * r, pos.Y, pos.Z - m20 * r)
+            local rx = project(pos.X + m00 * r, pos.Y, pos.Z + m20 * r)
+            if tx and bx and lx and rx then w = math.max(math.abs(rx - lx), 6) end
+        end
+        if not tx or not bx or not w then return hideEntry(e) end
+
+        local h = by - ty
+        if h < 2 then return hideEntry(e) end
+        local left, top = tx - w * .5, ty
+
+        local col = Get(kind.color) or WHITE
+        if e.col ~= col then
+            e.col = col
+            e.box.Color = col
+            e.nameCol = nil
+        end
+
+        if Get("esp_box") then
+            e.box.Position = Vector2.new(left, top)
+            e.box.Size = Vector2.new(w, h)
+            setVisible(e.box, true)
+        else
+            setVisible(e.box, false)
+        end
+
+        local drewBar = false
+        local hpText, hpF
+        if kind.health and Get("esp_health") then
+            local hp, mx = readHealth(model, rec)
+            if hp then
+                hpF = hp / mx
+                hpF = hpF < 0 and 0 or (hpF > 1 and 1 or hpF)
+                if Get("esp_health_bar") then
+                    -- the empty part and the filled part sit side by side (never on top of each other),
+                    -- so draw order can't hide the fill
+                    local barX = left - 6
+                    local fillH = math.max(h * hpF, 1)
+                    local emptyH = h - fillH
+                    e.fill.Position = Vector2.new(barX, top + emptyH)
+                    e.fill.Size = Vector2.new(3, fillH)
+                    e.fill.Color = Get("esp_health_color") and healthColor(hpF) or BAR_GREEN
+                    setVisible(e.fill, true)
+                    if emptyH >= 1 then
+                        e.back.Position = Vector2.new(barX, top)
+                        e.back.Size = Vector2.new(3, emptyH)
+                        setVisible(e.back, true)
+                    else
+                        setVisible(e.back, false)
+                    end
+                    drewBar = true
+                end
+                if Get("esp_health_text") then hpText = "[" .. math.floor(hp + .5) .. "]" end
+            else
+                warnNoHealth(model, rec)
+            end
+        end
+        if not drewBar then
+            setVisible(e.back, false)
+            setVisible(e.fill, false)
+        end
+
+        -- label: "name - [HP]". The name keeps the ESP colour; the [HP] part takes the health colour.
+        local shown = resolveName(rec.name) -- false in the definitions = never show this name
+        if not shown or not Get("esp_name") then shown = nil end
+
+        if hpText then
+            local numCol = col
+            if hpF and Get("esp_health_color") then numCol = healthColor(hpF) end
+            local pre = shown and (shown .. " -") or ""
+            if e.hpPre ~= pre then e.hpPre = pre e.hpA.Text = pre end
+            if e.hpNum ~= hpText then e.hpNum = hpText e.hpB.Text = hpText end
+            if e.hpCol ~= col then
+                e.hpCol = col
+                e.hpA.Color = col
+            end
+            if e.hpNumCol ~= numCol then
+                e.hpNumCol = numCol
+                e.hpB.Color = numCol
+            end
+            -- widths come from a stable per-string cache, so the layout can never flip between frames
+            e.wB = pieceWidth(e.hpB, hpText)
+            e.wAll = pre == "" and e.wB or (pieceWidth(e.hpA, pre) + LABEL_GAP + e.wB)
+
+            local y = top - 16
+            local x = tx - e.wAll * .5
+            e.hpA.Position = Vector2.new(x, y)
+            e.hpB.Position = Vector2.new(x + e.wAll - e.wB, y)
+            setVisible(e.hpA, pre ~= "")
+            setVisible(e.hpB, true)
+            setVisible(e.name, false)
+        else
+            setVisible(e.hpA, false)
+            setVisible(e.hpB, false)
+            if shown then
+                if e.nameCol ~= col then
+                    e.nameCol = col
+                    e.name.Color = col
+                end
+                if e.name.Text ~= shown then e.name.Text = shown end
+                e.name.Position = Vector2.new(tx, top - 16)
+                setVisible(e.name, true)
+            else
+                setVisible(e.name, false)
+            end
+        end
+
+        if Get("esp_distance") then
+            local txt = string.format("[%d]", math.floor(dist + .5))
+            if e.dist.Text ~= txt then e.dist.Text = txt end
+            e.dist.Position = Vector2.new(tx, top + h + 6)
+            setVisible(e.dist, true)
+        else
+            setVisible(e.dist, false)
+        end
+    end
+
+    Nexa:OnDestroy(function()
+        for _, rec in pairs(recs) do removeEntry(rec.entry) end
+        recs = {}
+    end)
+
+    if hasDrawing then task.spawn(function()
+        local wasOn = false
+        local lastErr
+        while Nexa:IsAlive() do
+            local on = Get("esp_enabled") and (Get("esp_npc") or Get("esp_mob") or Get("esp_artifact"))
+            if not on then
+                if wasOn then hideAll() wasOn = false end
+                task.wait(0.1)
+            else
+                wasOn = true
+                frameNo = frameNo + 1
+                local now = os.clock()
+                local ok, err = pcall(function()
+                    if now >= nextRefresh then
+                        nextRefresh = now + REFRESH
+                        refreshTargets()
+                    end
+                    if not camUpdate() then return hideAll() end
+                    local range = Get("esp_range") or 0
+                    for model, rec in pairs(recs) do drawTarget(model, rec, range) end
+                end)
+                if not ok and err ~= lastErr then lastErr = err warn("[Deepwoken] esp error: " .. tostring(err)) end
+                task.wait()
+            end
+        end
+    end) end
+end
 
 -- MISC TAB
 local miscGeneralSec = miscTab:AddSection("Removals", "Strip effects and obstacles out of the world.", { Column = "left" })
@@ -1107,7 +1730,16 @@ do
             if good and type(saved) == "table" then
                 for flag, ctrl in pairs(Controls) do
                     if not SKIP[flag] and saved[flag] ~= nil then
-                        pcall(function() ctrl:SetValue(saved[flag]) end)
+                        if ctrl.Kind == "ColorPicker" then
+                            local hex = tostring(saved[flag]):gsub("#", "")
+                            if #hex == 6 and hex:match("^%x+$") then
+                                pcall(function()
+                                    ctrl:SetValue(Color3.fromRGB(tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16)))
+                                end)
+                            end
+                        else
+                            pcall(function() ctrl:SetValue(saved[flag]) end)
+                        end
                     end
                 end
             end
@@ -1128,6 +1760,9 @@ do
                             local v = ctrl.Value
                             if type(v) == "boolean" or type(v) == "number" or type(v) == "string" then
                                 snap[flag] = v
+                            elseif ctrl.Kind == "ColorPicker" and v then
+                                local okc, hex = pcall(string.format, "#%02X%02X%02X", math.floor(v.R * 255 + 0.5), math.floor(v.G * 255 + 0.5), math.floor(v.B * 255 + 0.5))
+                                if okc then snap[flag] = hex end
                             end
                         end
                     end
@@ -1427,7 +2062,7 @@ end
 
 -- DEBUG TAB
 local actionSec = debugTab:AddSection("Actions", "Reload data from GitHub.", { Column = "left" })
-actionSec:AddButton({ Title = "Reload Anim Data", ButtonText = "Reload", Callback = function() LoadData() end })
+actionSec:AddButton({ Title = "Reload Anim Data", ButtonText = "Reload", Callback = function() LoadData() if ReloadESPDefinitions then task.spawn(ReloadESPDefinitions) end end })
 actionSec:AddButton({ Title = "Reload Ignored Anims", ButtonText = "Reload", Callback = function() LoadIgnored() end })
 actionSec:AddButton({
     Title = "Print Anim Table",
@@ -1622,7 +2257,7 @@ local function Perform(kind, hold, tag, model, id, report)
 
     -- roll cancel: right click a set time after a dodge (Q) goes out
     if vk == KEY_DODGE then
-        local rollCancel = Get("sb_t_rollcancel") or 0
+        local rollCancel = Get("auto_roll_cancel") and (Get("sb_t_rollcancel") or 0) or 0
         if rollCancel > 0 then
             task.spawn(function()
                 task.wait(rollCancel / 1000)
@@ -1630,7 +2265,7 @@ local function Perform(kind, hold, tag, model, id, report)
                 if report then report("Roll cancel (right click)", rollCancel) end
             end)
         elseif report then
-            report("Roll cancel is off (Roll Cancel Timing is 0)", 0)
+            report("Roll cancel is off (turn on Auto Roll Cancel and set a timing)", 0)
         end
     end
 
