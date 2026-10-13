@@ -75,30 +75,6 @@ local function getNexa()
         error("[Deepwoken] Nexa download returned invalid/empty source.")
     end
 
-    local islandPatch = [[local function DrawTitleBar(title, subtitle)
-    local th = State.Theme]]
-    local islandReplacement = [[local function DrawTitleBar(title, subtitle)
-    if not State.Open then
-        if State.ProfileAvatar and State.ProfileAvatar.Image then
-            pcall(function() State.ProfileAvatar.Image.Visible = false end)
-        end
-        for _, action in ipairs(State.Island and State.Island.Actions or {}) do
-            if action._IslandImage then
-                pcall(function() action._IslandImage.Visible = false end)
-            end
-        end
-        State.ProfileAvatarRect = nil
-        return
-    end
-    local th = State.Theme]]
-    if string.find(source, islandPatch, 1, true) then
-        source = string.gsub(source, islandPatch, function()
-            return islandReplacement
-        end, 1)
-    else
-        warn("[Deepwoken] Nexa island visibility patch point not found; floating UI may remain visible.")
-    end
-
     -- Notifications were drawn with the window's fade alpha, which is 0 while the menu is closed:
     -- the box and text vanished and only the (image) logo stayed visible. Draw them at full alpha.
     local patchedSource, notifPatches = string.gsub(source, "\n([ \t]*)DrawNotifications%(%)", function(indent)
@@ -1453,7 +1429,7 @@ do
     -- Text widths: the executor's TextBounds jumps around and runs wide, so the label is laid out from a fixed
     -- per-letter estimate instead. If the [HP] sits too far from the name lower TEXT_SCALE, if it touches raise it.
     local TEXT_SCALE = 0.85
-    local LABEL_GAP = 20 -- pixels between "name -" and "[HP]"
+    local LABEL_GAP = 3 -- pixels between "name -" and "[HP]"
     local frameNo = 0
     local function estWidth(str)
         local w = 0
