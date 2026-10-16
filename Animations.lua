@@ -1,6 +1,7 @@
 local base = "https://raw.githubusercontent.com/4sigils/Deepwoken/refs/heads/main/animations/"
 
 local files = {
+    "Attunements/Flame.lua",
     "Weapons/Light.lua",
     "Weapons/Medium.lua",
     "Weapons/Heavy.lua",
